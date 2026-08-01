@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ARG ANDROID_APK_URL=https://github.com/myb357/score-player/releases/latest/download/score-player.apk
+ARG ANDROID_APK_URL=https://github.com/myb357/score-player/releases/download/v1.0.8/score-player.apk
 RUN mkdir -p static/android \
     && python -c "import urllib.request; urllib.request.urlretrieve('${ANDROID_APK_URL}', 'static/android/score-player.apk')"
 
