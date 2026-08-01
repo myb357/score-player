@@ -295,3 +295,39 @@ audio.media-preview { background: transparent; }
   .crop-stage { min-height: 220px; }
   .crop-actions .btn { flex: 1; justify-content: center; }
 }
+
+/* ---------- Home batch actions ---------- */
+.batch-toolbar {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -6px 0 18px;
+  padding: 12px 14px;
+  flex-wrap: wrap;
+}
+.batch-count { color: var(--accent-2); font-size: 14px; font-weight: 700; }
+.batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.grid.batch-mode .score-card { padding-left: 54px; }
+.grid.batch-mode .score-card:hover { transform: none; }
+.grid.batch-mode .score-card .sc-actions { display: none; }
+.score-card.selected { border-color: rgba(34,211,238,.7); box-shadow: 0 0 0 3px rgba(34,211,238,.12), var(--shadow); }
+.batch-check {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 4;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(15,18,32,.82);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.batch-check input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+
+@media (max-width: 640px) {
+  .batch-toolbar { align-items: stretch; }
+  .batch-actions .btn { flex: 1; justify-content: center; }
+}

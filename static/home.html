@@ -39,6 +39,17 @@
   <div class="container">
     <div class="page-head">
       <h1>我的谱子</h1>
+      <button class="btn btn-ghost" id="batchToggleBtn" type="button" style="display:none;">批量选择</button>
+    </div>
+    <div class="batch-toolbar panel" id="batchToolbar" style="display:none;">
+      <div class="batch-count" id="batchCount">已选 0 个</div>
+      <div class="batch-actions">
+        <button class="btn btn-sm" id="batchSelectAll" type="button">全选</button>
+        <button class="btn btn-sm" id="batchClear" type="button">取消全选</button>
+        <button class="btn btn-sm" id="batchExport" type="button">批量导出</button>
+        <button class="btn btn-danger btn-sm" id="batchDelete" type="button">批量删除</button>
+        <button class="btn btn-ghost btn-sm" id="batchCancel" type="button">取消</button>
+      </div>
     </div>
     <div id="content">
       <div class="empty"><div class="spinner"></div></div>
@@ -187,36 +198,151 @@
 
     function modeLabel(m) { return m === 'audio' ? '跟伴奏时间轴' : '独立倒计时'; }
 
-    async function load() {
-      const content = document.getElementById('content');
+    let scoreList = [];
+    let batchMode = false;
+    const selectedScores = new Set();
+    const batchToggleBtn = document.getElementById('batchToggleBtn');
+    const batchToolbar = document.getElementById('batchToolbar');
+    const batchCount = document.getElementById('batchCount');
+    const batchSelectAll = document.getElementById('batchSelectAll');
+    const batchClear = document.getElementById('batchClear');
+    const batchExport = document.getElementById('batchExport');
+    const batchDelete = document.getElementById('batchDelete');
+    const batchCancel = document.getElementById('batchCancel');
+
+    function setBatchMode(enabled) {
+      batchMode = enabled;
+      if (!enabled) selectedScores.clear();
+      batchToolbar.style.display = enabled ? 'flex' : 'none';
+      batchToggleBtn.textContent = enabled ? '退出批量模式' : '批量选择';
+      updateBatchUI();
+      renderScores();
+    }
+
+    function updateBatchUI() {
+      const count = selectedScores.size;
+      batchCount.textContent = '已选 ' + count + ' 个';
+      batchExport.disabled = count === 0;
+      batchDelete.disabled = count === 0;
+      batchClear.disabled = count === 0;
+      batchSelectAll.disabled = scoreList.length === 0 || count === scoreList.length;
+    }
+
+    function toggleScoreSelection(id) {
+      if (selectedScores.has(id)) selectedScores.delete(id);
+      else selectedScores.add(id);
+      updateBatchUI();
+      renderScores();
+    }
+
+    batchToggleBtn.addEventListener('click', () => setBatchMode(!batchMode));
+    batchCancel.addEventListener('click', () => setBatchMode(false));
+    batchSelectAll.addEventListener('click', () => {
+      scoreList.forEach(s => selectedScores.add(Number(s.id)));
+      updateBatchUI();
+      renderScores();
+    });
+    batchClear.addEventListener('click', () => {
+      selectedScores.clear();
+      updateBatchUI();
+      renderScores();
+    });
+    batchExport.addEventListener('click', async () => {
+      const ids = Array.from(selectedScores);
+      if (ids.length === 0) return;
+      batchExport.disabled = true;
+      batchExport.textContent = '导出中…';
       try {
-        const res = await fetch('/api/scores');
+        const res = await fetch('/api/scores/batch-export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
         if (res.status === 401) { window.location.href = '/login'; return; }
-        const data = await res.json();
-        const scores = data.scores || [];
-        if (data.role === 'superadmin') {
-          currentRole = 'superadmin';
-          document.getElementById('usersBtn').style.display = '';
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          toast(data.detail || '批量导出失败', 'err');
+          return;
         }
-        if (scores.length === 0) {
-          content.innerHTML = `<div class="empty">
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'scores_export.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast('已开始下载', 'ok');
+      } catch (e) {
+        toast('批量导出失败，请重试', 'err');
+      } finally {
+        batchExport.textContent = '批量导出';
+        updateBatchUI();
+      }
+    });
+    batchDelete.addEventListener('click', async () => {
+      const ids = Array.from(selectedScores);
+      if (ids.length === 0) return;
+      if (!confirm('确定删除选中的 ' + ids.length + ' 个谱子？此操作不可撤销')) return;
+      batchDelete.disabled = true;
+      batchDelete.textContent = '删除中…';
+      try {
+        const res = await fetch('/api/scores/batch-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          toast('已删除 ' + (data.deleted || ids.length) + ' 个谱子', 'ok');
+          selectedScores.clear();
+          await load();
+        } else {
+          toast(data.detail || '批量删除失败', 'err');
+        }
+      } catch (e) {
+        toast('批量删除失败，请重试', 'err');
+      } finally {
+        batchDelete.textContent = '批量删除';
+        updateBatchUI();
+      }
+    });
+
+    function renderScores() {
+      const content = document.getElementById('content');
+      if (scoreList.length === 0) {
+        content.innerHTML = `<div class="empty">
             <div class="big">🎵</div>
             <div>还没有谱子，点击右上角「新建谱子」开始吧</div>
           </div>`;
-          return;
-        }
-        const grid = document.createElement('div');
-        grid.className = 'grid';
-        scores.forEach(s => {
-          const card = document.createElement('div');
-          card.className = 'panel score-card';
-          const ownerHtml = (currentRole === 'superadmin' && s.owner)
-            ? `<div class="sc-owner">创建者：<span class="badge">${escapeHtml(s.owner)}</span></div>` : '';
-          card.innerHTML = `
+        batchToggleBtn.style.display = 'none';
+        batchMode = false;
+        selectedScores.clear();
+        batchToolbar.style.display = 'none';
+        batchToggleBtn.textContent = '批量选择';
+        updateBatchUI();
+        return;
+      }
+      batchToggleBtn.style.display = '';
+      const grid = document.createElement('div');
+      grid.className = 'grid' + (batchMode ? ' batch-mode' : '');
+      scoreList.forEach(s => {
+        const id = Number(s.id);
+        const checked = selectedScores.has(id);
+        const card = document.createElement('div');
+        card.className = 'panel score-card' + (checked ? ' selected' : '');
+        const ownerHtml = (currentRole === 'superadmin' && s.owner)
+          ? `<div class="sc-owner">创建者：<span class="badge">${escapeHtml(s.owner)}</span></div>` : '';
+        const checkboxHtml = batchMode
+          ? `<label class="batch-check" aria-label="选择 ${escapeHtml(s.name)}"><input type="checkbox" ${checked ? 'checked' : ''} /></label>` : '';
+        card.innerHTML = `
+            ${checkboxHtml}
             <div class="sc-actions">
-              <button class="btn btn-sm sc-export" data-id="${s.id}">导出</button>
-              <button class="btn btn-sm sc-edit" data-id="${s.id}">编辑</button>
-              <button class="btn btn-danger btn-sm sc-del" data-id="${s.id}">删除</button>
+              <button class="btn btn-sm sc-export" data-id="${id}">导出</button>
+              <button class="btn btn-sm sc-edit" data-id="${id}">编辑</button>
+              <button class="btn btn-danger btn-sm sc-del" data-id="${id}">删除</button>
             </div>
             <div class="sc-name">${escapeHtml(s.name)}</div>
             ${ownerHtml}
@@ -226,29 +352,59 @@
               ${s.has_audio ? '<span class="badge">含伴奏</span>' : ''}
             </div>
             <div class="sc-time">创建于 ${s.created_at_text}</div>`;
-          card.addEventListener('click', (e) => {
-            if (e.target.closest('.sc-actions')) return;
-            window.location.href = '/player/' + s.id;
-          });
-          card.querySelector('.sc-export').addEventListener('click', (e) => {
-            e.stopPropagation();
-            window.location.href = '/api/scores/' + s.id + '/export';
-          });
-          card.querySelector('.sc-edit').addEventListener('click', (e) => {
-            e.stopPropagation();
-            window.location.href = '/new?edit=' + s.id;
-          });
-          card.querySelector('.sc-del').addEventListener('click', async (e) => {
-            e.stopPropagation();
-            if (!confirm('确定删除《' + s.name + '》？此操作不可撤销')) return;
-            const r = await fetch('/api/scores/' + s.id, { method: 'DELETE' });
-            if (r.ok) { toast('已删除', 'ok'); load(); }
-            else toast('删除失败', 'err');
-          });
-          grid.appendChild(card);
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('.sc-actions')) return;
+          if (batchMode) {
+            e.preventDefault();
+            toggleScoreSelection(id);
+            return;
+          }
+          window.location.href = '/player/' + id;
         });
-        content.innerHTML = '';
-        content.appendChild(grid);
+        const check = card.querySelector('.batch-check input');
+        if (check) {
+          check.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleScoreSelection(id);
+          });
+        }
+        card.querySelector('.sc-export').addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.location.href = '/api/scores/' + id + '/export';
+        });
+        card.querySelector('.sc-edit').addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.location.href = '/new?edit=' + id;
+        });
+        card.querySelector('.sc-del').addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (!confirm('确定删除《' + s.name + '》？此操作不可撤销')) return;
+          const r = await fetch('/api/scores/' + id, { method: 'DELETE' });
+          if (r.ok) { toast('已删除', 'ok'); load(); }
+          else toast('删除失败', 'err');
+        });
+        grid.appendChild(card);
+      });
+      content.innerHTML = '';
+      content.appendChild(grid);
+      updateBatchUI();
+    }
+
+    async function load() {
+      const content = document.getElementById('content');
+      try {
+        const res = await fetch('/api/scores');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json();
+        scoreList = data.scores || [];
+        selectedScores.forEach(id => {
+          if (!scoreList.some(s => Number(s.id) === id)) selectedScores.delete(id);
+        });
+        if (data.role === 'superadmin') {
+          currentRole = 'superadmin';
+          document.getElementById('usersBtn').style.display = '';
+        }
+        renderScores();
       } catch (e) {
         content.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
       }

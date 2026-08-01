@@ -761,6 +761,140 @@ async def export_score(request: Request, score_id: int):
     )
 
 
+def _normalize_score_ids(raw_ids) -> List[int]:
+    ids: List[int] = []
+    seen = set()
+    for raw in raw_ids or []:
+        try:
+            sid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if sid > 0 and sid not in seen:
+            ids.append(sid)
+            seen.add(sid)
+    return ids
+
+
+def _get_accessible_scores(me: dict, ids: List[int]) -> List[dict]:
+    if not ids:
+        return []
+    if me["role"] == "superadmin":
+        rows = db_query(
+            "SELECT id, name, mode, audio_filename, owner_id, created_at FROM scores WHERE id = ANY(%s) ORDER BY created_at DESC",
+            (ids,),
+        )
+    else:
+        rows = db_query(
+            "SELECT id, name, mode, audio_filename, owner_id, created_at FROM scores WHERE id = ANY(%s) AND owner_id = %s ORDER BY created_at DESC",
+            (ids, me["id"]),
+        )
+    return rows or []
+
+
+def _write_score_package(zf: zipfile.ZipFile, row: dict, package_name: str) -> None:
+    score_id = row["id"]
+    pages = db_query(
+        "SELECT page_index, image_filename, turn_seconds FROM pages WHERE score_id = %s ORDER BY page_index",
+        (score_id,),
+    ) or []
+    manifest_pages = []
+    for p in pages:
+        image_name = _safe_zip_name(p["image_filename"], f"page_{p['page_index']:03d}.png")
+        archive_path = f"images/{p['page_index']:03d}_{image_name}"
+        zf.writestr(
+            f"{package_name}/{archive_path}",
+            b2_read_bytes(_score_key(score_id, p["image_filename"])),
+        )
+        manifest_pages.append(
+            {
+                "index": p["page_index"],
+                "filename": p["image_filename"],
+                "path": archive_path,
+                "turn_seconds": p["turn_seconds"],
+            }
+        )
+    audio_path = _media_manifest_name(row["audio_filename"])
+    if row["audio_filename"] and audio_path:
+        zf.writestr(
+            f"{package_name}/{audio_path}",
+            b2_read_bytes(_score_key(score_id, row["audio_filename"])),
+        )
+    manifest = {
+        "version": 1,
+        "exported_at": int(time.time()),
+        "score": {
+            "name": row["name"],
+            "mode": row["mode"],
+            "audio_filename": row["audio_filename"],
+            "created_at": row["created_at"],
+        },
+        "pages": manifest_pages,
+        "audio": {"path": audio_path, "filename": row["audio_filename"]} if audio_path else None,
+    }
+    zf.writestr(f"{package_name}/manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+
+
+@app.post("/api/scores/batch-export")
+async def batch_export_scores(request: Request):
+    me = current_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ids = _normalize_score_ids(body.get("ids"))
+    if not ids:
+        return JSONResponse(status_code=400, content={"detail": "请选择要导出的谱子"})
+    rows = _get_accessible_scores(me, ids)
+    if len(rows) != len(ids):
+        return JSONResponse(status_code=403, content={"detail": "部分谱子不存在或无权导出"})
+
+    zip_buffer = io.BytesIO()
+    used_names = set()
+    try:
+        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for row in rows:
+                base_name = _safe_zip_name(row["name"], f"score_{row['id']}")
+                package_name = base_name
+                idx = 2
+                while package_name in used_names:
+                    package_name = f"{base_name}_{idx}"
+                    idx += 1
+                used_names.add(package_name)
+                _write_score_package(zf, row, package_name)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": f"批量导出失败: {e}"})
+
+    zip_buffer.seek(0)
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="scores_export.zip"'},
+    )
+
+
+@app.post("/api/scores/batch-delete")
+async def batch_delete_scores(request: Request):
+    me = current_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ids = _normalize_score_ids(body.get("ids"))
+    if not ids:
+        return JSONResponse(status_code=400, content={"detail": "请选择要删除的谱子"})
+    rows = _get_accessible_scores(me, ids)
+    if len(rows) != len(ids):
+        return JSONResponse(status_code=403, content={"detail": "部分谱子不存在或无权删除"})
+
+    db_query("DELETE FROM scores WHERE id = ANY(%s)", (ids,))
+    for score_id in ids:
+        try:
+            b2_delete_prefix(f"scores/{score_id}/")
+        except Exception:
+            pass
+    return {"ok": True, "deleted": len(ids)}
+
+
 @app.post("/api/scores/import")
 async def import_score(request: Request, package: UploadFile = File(...)):
     me = current_user(request)
