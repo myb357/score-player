@@ -63,12 +63,11 @@
         <button class="btn btn-ghost btn-icon settings-toggle" id="settingsBtn" type="button" aria-label="设置" aria-haspopup="true" aria-expanded="false">⚙</button>
         <div class="settings-dropdown" id="settingsDropdown" role="menu">
           <a class="settings-item" href="/users" id="usersBtn" role="menuitem" style="display:none;">用户管理</a>
-          <button class="settings-item" id="pwdBtn" type="button" role="menuitem">修改密码</button>
           <a class="settings-item" href="/download/android" id="downloadAndroidBtn" role="menuitem">下载 Android App</a>
-          <button class="settings-item" id="checkUpdateBtn" type="button" role="menuitem">检查更新</button>
-          <button class="settings-item" id="aboutBtn" type="button" role="menuitem">关于</button>
           <button class="settings-item" id="clearCacheBtn" type="button" role="menuitem">清除缓存</button>
           <button class="settings-item danger" id="logoutBtn" type="button" role="menuitem">退出登录</button>
+          <button class="settings-item" id="checkUpdateBtn" type="button" role="menuitem">检查更新</button>
+          <button class="settings-item" id="aboutBtn" type="button" role="menuitem">关于</button>
         </div>
       </div>
     </div>
@@ -100,25 +99,6 @@
     </div>
   </div>
 
-  <!-- 修改密码 modal -->
-  <div class="modal-overlay" id="pwdModal" style="display:none;">
-    <div class="panel modal-card">
-      <h2>修改密码</h2>
-      <div class="sub">修改后请使用新密码登录</div>
-      <div class="form-row">
-        <label class="field-label" for="oldPwd">原密码</label>
-        <input type="password" id="oldPwd" autocomplete="current-password" placeholder="请输入原密码" />
-      </div>
-      <div class="form-row">
-        <label class="field-label" for="newPwd">新密码</label>
-        <input type="password" id="newPwd" autocomplete="new-password" placeholder="至少 6 位" />
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-ghost" id="pwdCancel">取消</button>
-        <button class="btn btn-primary" id="pwdSave">确认修改</button>
-      </div>
-    </div>
-  </div>
 
   <!-- 关于 modal -->
   <div class="modal-overlay" id="aboutModal" style="display:none;">
@@ -129,7 +109,7 @@
         <div><strong>App 名称：</strong>谱子播放器</div>
       </div>
       <div class="form-row">
-        <div><strong>当前版本：</strong>v<span id="aboutVersion">1.0.7</span></div>
+        <div><strong>当前版本：</strong>v<span id="aboutVersion">1.0.8</span></div>
       </div>
       <div class="form-row">
         <div><strong>说明：</strong>用于管理、导入和播放曲谱，支持 Android App 与网页端使用。</div>
@@ -160,7 +140,7 @@
       setTimeout(() => t.remove(), 2600);
     }
 
-    const CURRENT_APP_VERSION = '1.0.7';
+    const CURRENT_APP_VERSION = '1.0.8';
     function compareVersions(remote, current) {
       const remoteParts = String(remote || '').split('.');
       const currentParts = String(current || '').split('.');
@@ -401,43 +381,6 @@
         }
       } catch (e) { /* ignore, load() will handle 401 */ }
     }
-    // ---------- change password modal ----------
-    const pwdModal = document.getElementById('pwdModal');
-    function openPwd() {
-      document.getElementById('oldPwd').value = '';
-      document.getElementById('newPwd').value = '';
-      pwdModal.style.display = 'grid';
-    }
-    function closePwd() { pwdModal.style.display = 'none'; }
-    document.getElementById('pwdBtn').addEventListener('click', () => {
-      closeSettingsMenu();
-      openPwd();
-    });
-    document.getElementById('pwdCancel').addEventListener('click', closePwd);
-    pwdModal.addEventListener('click', e => { if (e.target === pwdModal) closePwd(); });
-    document.getElementById('pwdSave').addEventListener('click', async () => {
-      const oldPwd = document.getElementById('oldPwd').value;
-      const newPwd = document.getElementById('newPwd').value;
-      if (!oldPwd) { toast('请输入原密码', 'err'); return; }
-      if (newPwd.length < 6) { toast('新密码至少 6 位', 'err'); return; }
-      const btn = document.getElementById('pwdSave');
-      btn.disabled = true;
-      try {
-        const res = await apiFetch('/api/me/password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ old_password: oldPwd, new_password: newPwd }),
-        });
-        if (res.status === 401) { goLogin(); return; }
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) { toast('密码已修改', 'ok'); closePwd(); }
-        else toast(data.detail || '修改失败', 'err');
-      } catch (e) {
-        toast('网络错误，请重试', 'err');
-      }
-      btn.disabled = false;
-    });
-
     function modeLabel(m) { return m === 'audio' ? '跟伴奏时间轴' : '独立倒计时'; }
 
     const SCORE_VIEW_MODE_KEY = 'score-player:home-view-mode';

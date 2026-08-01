@@ -57,6 +57,25 @@
   </div>
 
   <div class="container stack">
+    <!-- 修改当前账号密码 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">修改当前账号密码</div>
+      <div class="form-grid">
+        <div class="cell">
+          <label for="oldPwd">原密码</label>
+          <input type="password" id="oldPwd" placeholder="请输入原密码" autocomplete="current-password" />
+        </div>
+        <div class="cell">
+          <label for="newPwd">新密码</label>
+          <input type="password" id="newPwd" placeholder="至少 6 位" autocomplete="new-password" />
+        </div>
+        <div class="cell"></div>
+        <div class="cell">
+          <button class="btn btn-primary" id="changePwdBtn">修改密码</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 新建用户 -->
     <div class="panel" style="padding:20px;">
       <div class="section-title">新建用户</div>
@@ -170,6 +189,34 @@
         list.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
       }
     }
+
+    document.getElementById('changePwdBtn').addEventListener('click', async () => {
+      const oldPwd = document.getElementById('oldPwd').value;
+      const newPwd = document.getElementById('newPwd').value;
+      if (!oldPwd) { toast('请输入原密码', 'err'); return; }
+      if (newPwd.length < 6) { toast('新密码至少 6 位', 'err'); return; }
+      const btn = document.getElementById('changePwdBtn');
+      btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/me/password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ old_password: oldPwd, new_password: newPwd }),
+        });
+        if (res.status === 401) { goLogin(); return; }
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          toast('密码已修改', 'ok');
+          document.getElementById('oldPwd').value = '';
+          document.getElementById('newPwd').value = '';
+        } else {
+          toast(data.detail || '修改失败', 'err');
+        }
+      } catch (e) {
+        toast('网络错误，请重试', 'err');
+      }
+      btn.disabled = false;
+    });
 
     document.getElementById('createBtn').addEventListener('click', async () => {
       const username = document.getElementById('nu').value.trim();
