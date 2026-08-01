@@ -272,6 +272,8 @@
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             console.log('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 ok, bytes=' + bytes.length + ', mime=' + mime);
             return new Blob([bytes], { type: mime });
+          } else {
+            console.warn('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 returned empty, falling back');
           }
         } catch (e) {
           console.warn('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 failed:', e);
