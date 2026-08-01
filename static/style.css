@@ -167,8 +167,8 @@ audio.media-preview { background: transparent; }
 /* ---------- Player (vertical side bars) ---------- */
 .player-root { position: fixed; inset: 0; background: #05060c; overflow: hidden; }
 .player-body { position: absolute; inset: 0; display: flex; flex-direction: row; }
-.stage { flex: 1 1 auto; min-width: 0; display: block; overflow: auto; position: relative; }
-.stage img { display: block; width: 100%; height: auto; max-width: 100%; max-height: none; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+.stage { flex: 1 1 auto; min-width: 0; display: flex; justify-content: center; align-items: center; overflow: hidden; position: relative; }
+.stage img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; user-select: none; -webkit-user-drag: none; }
 
 .side-bar {
   flex-shrink: 0; width: 88px; display: flex; flex-direction: column; align-items: center;
