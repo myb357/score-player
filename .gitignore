@@ -1,0 +1,6 @@
+__pycache__/
+/venv
+*.pyc
+.env
+/data
+score_app_data/

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>我的谱子</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="logo">🎼</span> 谱子播放器</div>
+    <div class="topbar-actions">
+      <a class="btn btn-primary" href="/new">＋ 新建谱子</a>
+      <button class="btn btn-ghost" id="logoutBtn">退出登录</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="page-head">
+      <h1>我的谱子</h1>
+    </div>
+    <div id="content">
+      <div class="empty"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script>
+    function toast(msg, type) {
+      const w = document.getElementById('toasts');
+      const t = document.createElement('div');
+      t.className = 'toast ' + (type || '');
+      t.textContent = msg;
+      w.appendChild(t);
+      setTimeout(() => t.remove(), 2600);
+    }
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+
+    function modeLabel(m) { return m === 'audio' ? '跟伴奏时间轴' : '独立倒计时'; }
+
+    async function load() {
+      const content = document.getElementById('content');
+      try {
+        const res = await fetch('/api/scores');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json();
+        const scores = data.scores || [];
+        if (scores.length === 0) {
+          content.innerHTML = `<div class="empty">
+            <div class="big">🎵</div>
+            <div>还没有谱子，点击右上角「新建谱子」开始吧</div>
+          </div>`;
+          return;
+        }
+        const grid = document.createElement('div');
+        grid.className = 'grid';
+        scores.forEach(s => {
+          const card = document.createElement('div');
+          card.className = 'panel score-card';
+          card.innerHTML = `
+            <button class="btn btn-danger btn-sm sc-del" data-id="${s.id}">删除</button>
+            <div class="sc-name">${escapeHtml(s.name)}</div>
+            <div class="sc-meta">
+              <span class="badge accent">${modeLabel(s.mode)}</span>
+              <span class="badge">${s.page_count} 页</span>
+              ${s.has_audio ? '<span class="badge">含伴奏</span>' : ''}
+            </div>
+            <div class="sc-time">创建于 ${s.created_at_text}</div>`;
+          card.addEventListener('click', (e) => {
+            if (e.target.classList.contains('sc-del')) return;
+            window.location.href = '/player/' + s.id;
+          });
+          card.querySelector('.sc-del').addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!confirm('确定删除《' + s.name + '》？此操作不可撤销')) return;
+            const r = await fetch('/api/scores/' + s.id, { method: 'DELETE' });
+            if (r.ok) { toast('已删除', 'ok'); load(); }
+            else toast('删除失败', 'err');
+          });
+          grid.appendChild(card);
+        });
+        content.innerHTML = '';
+        content.appendChild(grid);
+      } catch (e) {
+        content.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    load();
+  </script>
+</body>
+</html>

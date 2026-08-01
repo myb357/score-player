@@ -1,0 +1,19 @@
+# Render 部署配置（Blueprint）。在 Render 控制台选择 "New +" -> "Blueprint"，
+# 关联包含本仓库的 Git 仓库即可自动按此文件创建服务。
+services:
+  - type: web
+    name: score-app
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # free 免费套餐：可用，但无持久磁盘、且约 15 分钟无访问会休眠（首次唤醒较慢）
+    # 如需“持久化 + 长期常驻不休眠”，把 plan 改为 starter（约 $7/月）并启用下方 disk
+    plan: free
+    envVars:
+      - key: SCORE_DATA_DIR
+        value: /data
+    # 持久磁盘：free 套餐不支持磁盘；升级到 starter 及以上后，取消下面注释即可持久化数据
+    # disk:
+    #   name: score-data
+    #   mountPath: /data
+    #   sizeGB: 1
+    healthCheckPath: /api/v1/ping

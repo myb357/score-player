@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>新建谱子</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="logo">🎼</span> 新建谱子</div>
+    <div class="topbar-actions">
+      <a class="btn btn-ghost" href="/">返回主页</a>
+    </div>
+  </div>
+
+  <div class="container stack">
+    <!-- 名称 -->
+    <div class="panel" style="padding:20px;">
+      <label class="field-label" for="scoreName">谱子名称</label>
+      <input type="text" id="scoreName" placeholder="例如：C大调练习曲" maxlength="80" />
+    </div>
+
+    <!-- 翻页模式 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">翻页模式</div>
+      <div class="radio-group" id="modeGroup">
+        <div class="radio-card active" data-mode="audio">
+          <h4>🎵 跟伴奏时间轴</h4>
+          <p>播放到指定秒数时自动翻页。倍速播放时翻页点会同步缩放。</p>
+        </div>
+        <div class="radio-card" data-mode="countdown">
+          <h4>⏱️ 独立倒计时</h4>
+          <p>按每页设定的秒数倒计时翻页，与音频无关。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 图片上传 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">谱页图片（可多张，拖动排序）</div>
+      <div class="dropzone" id="imgDrop">
+        <div class="dz-icon">🖼️</div>
+        <div>点击或拖拽图片到此处上传</div>
+        <div class="hint" style="margin-top:6px;">支持 PNG / JPG / WEBP 等格式，可一次选择多张</div>
+      </div>
+      <input type="file" id="imgInput" accept="image/*" multiple hidden />
+      <div class="pages-list" id="pagesList"></div>
+    </div>
+
+    <!-- 伴奏上传 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">伴奏（音频或视频）</div>
+      <div class="hint" style="margin-bottom:10px;">支持音频（mp3/wav/m4a…）与视频（mp4/mov…）。上传视频将自动提取音轨作为伴奏。</div>
+      <div class="dropzone" id="mediaDrop">
+        <div class="dz-icon">🎧</div>
+        <div id="mediaDropText">点击或拖拽音频 / 视频文件到此处</div>
+      </div>
+      <input type="file" id="mediaInput" accept="audio/*,video/*" hidden />
+
+      <div class="media-box" id="mediaBox" style="display:none;">
+        <video id="mediaPreview" class="media-preview" controls style="max-height:220px;"></video>
+        <label class="chk" style="margin-top:12px;">
+          <input type="checkbox" id="trimEnable" />
+          裁剪伴奏片段（截取起止时间之间作为最终伴奏）
+        </label>
+        <div id="trimUI" style="display:none;">
+          <div class="trim-row">
+            <div class="trim-slider" id="trimSlider">
+              <div class="trim-track"></div>
+              <div class="trim-range" id="trimRange"></div>
+              <input type="range" id="trimStart" min="0" max="100" step="0.1" value="0" />
+              <input type="range" id="trimEnd" min="0" max="100" step="0.1" value="100" />
+            </div>
+          </div>
+          <div class="trim-row">
+            <div>起始 A：<b id="trimStartLabel" style="color:var(--accent-2)">0:00</b></div>
+            <div>结束 B：<b id="trimEndLabel" style="color:var(--accent-2)">0:00</b></div>
+            <button class="btn btn-sm" id="previewSeg" type="button">▶ 试听选段</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <a class="btn btn-ghost" href="/">取消</a>
+      <button class="btn btn-primary" id="saveBtn">保存谱子</button>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script>
+    // ---------- toast ----------
+    function toast(msg, type) {
+      const w = document.getElementById('toasts');
+      const t = document.createElement('div');
+      t.className = 'toast ' + (type || '');
+      t.textContent = msg;
+      w.appendChild(t);
+      setTimeout(() => t.remove(), 3000);
+    }
+    function fmt(t) {
+      if (!isFinite(t)) return '0:00';
+      const m = Math.floor(t / 60), s = Math.floor(t % 60);
+      return m + ':' + String(s).padStart(2, '0');
+    }
+    function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+    // ---------- mode ----------
+    let currentMode = 'audio';
+    document.querySelectorAll('#modeGroup .radio-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.querySelectorAll('#modeGroup .radio-card').forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+        currentMode = card.dataset.mode;
+        updateTurnLabels();
+      });
+    });
+
+    // ---------- images ----------
+    let pages = []; // {file, url, id}
+    let uid = 0;
+    const imgDrop = document.getElementById('imgDrop');
+    const imgInput = document.getElementById('imgInput');
+    const pagesList = document.getElementById('pagesList');
+
+    imgDrop.addEventListener('click', () => imgInput.click());
+    imgInput.addEventListener('change', () => { addImages(imgInput.files); imgInput.value=''; });
+    ['dragover','dragenter'].forEach(ev => imgDrop.addEventListener(ev, e => { e.preventDefault(); imgDrop.classList.add('drag'); }));
+    ['dragleave','drop'].forEach(ev => imgDrop.addEventListener(ev, e => { e.preventDefault(); imgDrop.classList.remove('drag'); }));
+    imgDrop.addEventListener('drop', e => { addImages(e.dataTransfer.files); });
+
+    function addImages(fileList) {
+      for (const f of fileList) {
+        if (!f.type.startsWith('image/')) continue;
+        pages.push({ file: f, url: URL.createObjectURL(f), id: ++uid, turn: '' });
+      }
+      renderPages();
+    }
+
+    function updateTurnLabels() {
+      document.querySelectorAll('.pi-turn label').forEach(l => {
+        l.textContent = currentMode === 'audio' ? '伴奏第几秒翻页' : '本页停留秒数';
+      });
+    }
+
+    function renderPages() {
+      pagesList.innerHTML = '';
+      pages.forEach((p, idx) => {
+        const item = document.createElement('div');
+        item.className = 'page-item';
+        item.draggable = true;
+        item.dataset.id = p.id;
+        item.innerHTML = `
+          <div class="drag-handle" title="拖动排序">⠿</div>
+          <div class="pi-idx">${idx + 1}</div>
+          <img src="${p.url}" alt="page" />
+          <div class="pi-body">
+            <div class="pi-name">${escapeHtml(p.file.name)}</div>
+            <div class="pi-turn">
+              <label>${currentMode === 'audio' ? '伴奏第几秒翻页' : '本页停留秒数'}</label>
+              <input type="number" min="0" step="0.1" value="${p.turn}" placeholder="秒" />
+            </div>
+          </div>
+          <button class="btn btn-danger btn-sm" data-del="${p.id}">移除</button>`;
+        // turn input
+        item.querySelector('input').addEventListener('input', e => { p.turn = e.target.value; });
+        // remove
+        item.querySelector('[data-del]').addEventListener('click', () => {
+          pages = pages.filter(x => x.id !== p.id); renderPages();
+        });
+        // drag reorder (desktop)
+        item.addEventListener('dragstart', e => { item.classList.add('dragging'); e.dataTransfer.setData('text/plain', p.id); });
+        item.addEventListener('dragend', () => item.classList.remove('dragging'));
+        item.addEventListener('dragover', e => { e.preventDefault(); });
+        item.addEventListener('drop', e => {
+          e.preventDefault();
+          const fromId = +e.dataTransfer.getData('text/plain');
+          reorder(fromId, p.id);
+        });
+        // touch reorder via handle (mobile)
+        enableTouchDrag(item, p.id);
+        pagesList.appendChild(item);
+      });
+    }
+
+    function reorder(fromId, toId) {
+      if (fromId === toId) return;
+      const from = pages.findIndex(x => x.id === fromId);
+      const to = pages.findIndex(x => x.id === toId);
+      if (from < 0 || to < 0) return;
+      const [moved] = pages.splice(from, 1);
+      pages.splice(to, 0, moved);
+      renderPages();
+    }
+
+    // basic touch drag: long-press handle then move over items
+    function enableTouchDrag(item, id) {
+      const handle = item.querySelector('.drag-handle');
+      handle.addEventListener('touchstart', e => {
+        e.preventDefault();
+        const move = ev => {
+          const t = ev.touches[0];
+          const el = document.elementFromPoint(t.clientX, t.clientY);
+          const target = el && el.closest('.page-item');
+          if (target && +target.dataset.id !== id) {
+            reorder(id, +target.dataset.id);
+          }
+        };
+        const end = () => {
+          document.removeEventListener('touchmove', move);
+          document.removeEventListener('touchend', end);
+        };
+        document.addEventListener('touchmove', move, { passive: false });
+        document.addEventListener('touchend', end);
+      }, { passive: false });
+    }
+
+    // ---------- media (audio/video) + trim ----------
+    let mediaFile = null;
+    let mediaDuration = 0;
+    const mediaDrop = document.getElementById('mediaDrop');
+    const mediaInput = document.getElementById('mediaInput');
+    const mediaBox = document.getElementById('mediaBox');
+    const mediaPreview = document.getElementById('mediaPreview');
+    const trimEnable = document.getElementById('trimEnable');
+    const trimUI = document.getElementById('trimUI');
+    const trimStart = document.getElementById('trimStart');
+    const trimEnd = document.getElementById('trimEnd');
+    const trimRange = document.getElementById('trimRange');
+    const trimStartLabel = document.getElementById('trimStartLabel');
+    const trimEndLabel = document.getElementById('trimEndLabel');
+
+    mediaDrop.addEventListener('click', () => mediaInput.click());
+    mediaInput.addEventListener('change', () => { if (mediaInput.files[0]) setMedia(mediaInput.files[0]); });
+    ['dragover','dragenter'].forEach(ev => mediaDrop.addEventListener(ev, e => { e.preventDefault(); mediaDrop.classList.add('drag'); }));
+    ['dragleave','drop'].forEach(ev => mediaDrop.addEventListener(ev, e => { e.preventDefault(); mediaDrop.classList.remove('drag'); }));
+    mediaDrop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) setMedia(e.dataTransfer.files[0]); });
+
+    function setMedia(file) {
+      const isMedia = file.type.startsWith('audio/') || file.type.startsWith('video/');
+      if (!isMedia) { toast('请上传音频或视频文件', 'err'); return; }
+      mediaFile = file;
+      document.getElementById('mediaDropText').textContent = '已选择：' + file.name + '（点击可更换）';
+      mediaBox.style.display = 'block';
+      mediaPreview.src = URL.createObjectURL(file);
+      trimEnable.checked = false;
+      trimUI.style.display = 'none';
+      mediaPreview.addEventListener('loadedmetadata', () => {
+        mediaDuration = mediaPreview.duration || 0;
+        trimStart.max = mediaDuration; trimEnd.max = mediaDuration;
+        trimStart.value = 0; trimEnd.value = mediaDuration;
+        updateTrimUI();
+      }, { once: true });
+    }
+
+    trimEnable.addEventListener('change', () => {
+      trimUI.style.display = trimEnable.checked ? 'block' : 'none';
+    });
+
+    function updateTrimUI() {
+      let a = parseFloat(trimStart.value), b = parseFloat(trimEnd.value);
+      if (a > b - 0.1) { a = Math.max(0, b - 0.1); trimStart.value = a; }
+      const dur = mediaDuration || 1;
+      const left = (a / dur) * 100, right = (b / dur) * 100;
+      trimRange.style.left = left + '%';
+      trimRange.style.width = Math.max(0, right - left) + '%';
+      trimStartLabel.textContent = fmt(a);
+      trimEndLabel.textContent = fmt(b);
+    }
+    trimStart.addEventListener('input', () => {
+      if (parseFloat(trimStart.value) > parseFloat(trimEnd.value) - 0.1)
+        trimStart.value = Math.max(0, parseFloat(trimEnd.value) - 0.1);
+      updateTrimUI();
+    });
+    trimEnd.addEventListener('input', () => {
+      if (parseFloat(trimEnd.value) < parseFloat(trimStart.value) + 0.1)
+        trimEnd.value = parseFloat(trimStart.value) + 0.1;
+      updateTrimUI();
+    });
+
+    document.getElementById('previewSeg').addEventListener('click', () => {
+      const a = parseFloat(trimStart.value), b = parseFloat(trimEnd.value);
+      mediaPreview.currentTime = a;
+      mediaPreview.play();
+      const stop = () => { if (mediaPreview.currentTime >= b) { mediaPreview.pause(); mediaPreview.removeEventListener('timeupdate', stop); } };
+      mediaPreview.addEventListener('timeupdate', stop);
+    });
+
+    // ---------- save ----------
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      const name = document.getElementById('scoreName').value.trim();
+      if (!name) { toast('请填写谱子名称', 'err'); return; }
+      if (pages.length === 0) { toast('请至少上传一张谱页图片', 'err'); return; }
+      if (currentMode === 'audio' && !mediaFile) { toast('跟伴奏模式需要上传音频或视频', 'err'); return; }
+
+      const fd = new FormData();
+      fd.append('name', name);
+      fd.append('mode', currentMode);
+      pages.forEach(p => {
+        fd.append('images', p.file, p.file.name);
+        fd.append('turn_seconds', p.turn === '' ? '0' : p.turn);
+      });
+      if (mediaFile) {
+        fd.append('audio', mediaFile, mediaFile.name);
+        if (trimEnable.checked) {
+          fd.append('trim_start', trimStart.value);
+          fd.append('trim_end', trimEnd.value);
+        }
+      }
+
+      const btn = document.getElementById('saveBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> 处理中…';
+      try {
+        const res = await fetch('/api/scores', { method: 'POST', body: fd });
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          toast('保存成功', 'ok');
+          setTimeout(() => window.location.href = '/player/' + data.id, 600);
+          return;
+        }
+        toast(data.detail || '保存失败', 'err');
+      } catch (e) {
+        toast('网络错误，请重试', 'err');
+      }
+      btn.disabled = false;
+      btn.textContent = '保存谱子';
+    });
+  </script>
+</body>
+</html>

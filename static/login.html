@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>登录 · 谱子播放器</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <form class="panel auth-card" id="loginForm">
+      <div class="auth-logo">🎼</div>
+      <h1>谱子播放器</h1>
+      <div class="sub">请登录以继续</div>
+      <div class="form-row">
+        <label class="field-label" for="username">用户名</label>
+        <input type="text" id="username" name="username" autocomplete="username" placeholder="请输入用户名" required />
+      </div>
+      <div class="form-row">
+        <label class="field-label" for="password">密码</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" placeholder="请输入密码" required />
+      </div>
+      <button class="btn btn-primary" type="submit" id="submitBtn" style="width:100%; justify-content:center; margin-top:6px;">登 录</button>
+      <div class="error-msg" id="err"></div>
+    </form>
+  </div>
+  <script>
+    const form = document.getElementById('loginForm');
+    const err = document.getElementById('err');
+    const btn = document.getElementById('submitBtn');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+          }),
+        });
+        if (res.ok) {
+          window.location.href = '/';
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        err.textContent = data.detail || '登录失败';
+      } catch (e2) {
+        err.textContent = '网络错误，请重试';
+      }
+      btn.disabled = false;
+      btn.textContent = '登 录';
+    });
+  </script>
+</body>
+</html>

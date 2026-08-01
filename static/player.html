@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>播放</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="player-root" id="root">
+    <!-- top bar -->
+    <div class="player-top" id="topBar">
+      <a class="btn btn-ghost btn-sm" href="/">‹ 返回</a>
+      <div class="pt-title" id="title">加载中…</div>
+      <button class="btn btn-ghost btn-sm" id="fsBtn">⛶ 全屏</button>
+    </div>
+
+    <!-- stage -->
+    <div class="stage" id="stage">
+      <div class="page-nav-zone left" id="navLeft"></div>
+      <div class="page-nav-zone right" id="navRight"></div>
+      <div class="page-counter left" id="cntLeft">‹</div>
+      <img id="pageImg" alt="谱页" />
+      <div class="page-counter right" id="cntRight">›</div>
+    </div>
+
+    <!-- controls -->
+    <div class="controls" id="controls">
+      <div class="controls-inner">
+        <!-- progress (audio only) -->
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-bar" id="progressBar">
+            <div class="progress-ab" id="abFill" style="display:none;"></div>
+            <div class="progress-played" id="played"></div>
+            <div class="progress-marker a" id="markerA" data-l="A" style="display:none;"></div>
+            <div class="progress-marker b" id="markerB" data-l="B" style="display:none;"></div>
+          </div>
+          <div class="time-row">
+            <span id="curTime">0:00</span>
+            <span id="durTime">0:00</span>
+          </div>
+        </div>
+
+        <div class="ctrl-row">
+          <button class="round-btn" id="prevBtn" title="上一页">⏮</button>
+          <button class="play-btn" id="playBtn" title="播放/暂停">▶</button>
+          <button class="round-btn" id="nextBtn" title="下一页">⏭</button>
+
+          <div class="group">
+            <span style="font-size:13px; color:var(--muted)">页码</span>
+            <b id="pageInd" style="color:var(--accent-2)">1 / 1</b>
+          </div>
+
+          <div class="group speed-group" id="speedGroup">
+            <button class="round-btn btn-sm" id="speedDown" style="width:32px;height:32px;font-size:16px;">−</button>
+            <label>速度</label>
+            <input type="range" id="speedRange" min="0.1" max="2.0" step="0.1" value="1.0" />
+            <span class="speed-val" id="speedVal">1.0x</span>
+            <button class="round-btn btn-sm" id="speedUp" style="width:32px;height:32px;font-size:16px;">＋</button>
+          </div>
+
+          <div class="group" id="abGroup">
+            <span style="font-size:13px; color:var(--muted)">循环</span>
+            <button class="round-btn" id="setA" title="设起点A" style="font-size:14px;">A</button>
+            <button class="round-btn" id="setB" title="设终点B" style="font-size:14px;">B</button>
+            <button class="round-btn" id="clearAB" title="取消循环" style="font-size:14px;">✕</button>
+          </div>
+
+          <div class="countdown-pill" id="cdPill" style="display:none;">倒计时 —</div>
+        </div>
+      </div>
+    </div>
+
+    <audio id="audio" preload="metadata"></audio>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script>
+    const scoreId = window.location.pathname.split('/').pop();
+    const $ = id => document.getElementById(id);
+    function toast(msg, type){ const w=$('toasts'); const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; w.appendChild(t); setTimeout(()=>t.remove(),2600); }
+    function fmt(t){ if(!isFinite(t)||t<0)return '0:00'; const m=Math.floor(t/60),s=Math.floor(t%60); return m+':'+String(s).padStart(2,'0'); }
+
+    let score=null, pages=[], mode='audio';
+    let current=0;
+    let playing=false;
+    let flipAway=[]; // per page: time to leave the page
+    // countdown state
+    let cdRemaining=0, cdTimer=null, cdStartTs=0;
+    // A-B loop
+    let loopA=null, loopB=null;
+
+    const audio=$('audio');
+    const hasAudio=()=>!!(score && score.audio_url);
+
+    async function init(){
+      try{
+        const res=await fetch('/api/scores/'+scoreId);
+        if(res.status===401){ window.location.href='/login'; return; }
+        if(!res.ok){ toast('谱子不存在','err'); setTimeout(()=>location.href='/',1200); return; }
+        score=await res.json();
+      }catch(e){ toast('加载失败','err'); return; }
+
+      pages=score.pages||[];
+      mode=score.mode;
+      $('title').textContent=score.name;
+      flipAway=pages.map(p=>p.turn_seconds||0);
+
+      // preload images
+      pages.forEach(p=>{ const im=new Image(); im.src=p.image_url; });
+
+      if(hasAudio()){
+        audio.src=score.audio_url;
+        audio.addEventListener('loadedmetadata',()=>{ $('durTime').textContent=fmt(audio.duration); });
+        audio.addEventListener('timeupdate',onTimeUpdate);
+        audio.addEventListener('ended',()=>{ playing=false; updatePlayBtn(); });
+      }else{
+        // no audio: hide audio-only controls
+        $('progressWrap').style.display='none';
+        $('abGroup').style.display='none';
+        $('speedGroup').style.display='none';
+      }
+      if(mode==='countdown'){ $('cdPill').style.display='inline-block'; }
+
+      setPage(0);
+      bindControls();
+      updatePlayBtn();
+    }
+
+    // ---------- paging ----------
+    function pageStart(i){ return i<=0?0:(flipAway[i-1]||0); }
+
+    function setPage(i, seekAudio){
+      if(i<0)i=0; if(i>pages.length-1)i=pages.length-1;
+      current=i;
+      $('pageImg').src=pages[i].image_url;
+      $('pageInd').textContent=(i+1)+' / '+pages.length;
+      if(mode==='audio' && hasAudio() && seekAudio){
+        audio.currentTime=pageStart(i)+0.001;
+      }
+      if(mode==='countdown'){ resetCountdown(); }
+    }
+
+    function nextPage(manual){
+      if(current<pages.length-1) setPage(current+1, manual);
+    }
+    function prevPage(manual){
+      if(current>0) setPage(current-1, manual);
+    }
+
+    // ---------- audio timeupdate: auto flip + AB loop + progress ----------
+    function onTimeUpdate(){
+      const t=audio.currentTime;
+      $('curTime').textContent=fmt(t);
+      const dur=audio.duration||1;
+      $('played').style.width=(t/dur*100)+'%';
+
+      // A-B loop
+      if(loopA!=null && loopB!=null && t>=loopB){ audio.currentTime=loopA; return; }
+
+      // auto flip (audio mode)
+      if(mode==='audio'){
+        let target=0;
+        for(let i=0;i<pages.length-1;i++){
+          const eff = flipAway[i]>0 ? flipAway[i] : Infinity;
+          if(t>=eff) target=i+1; else break;
+        }
+        if(target!==current) setPage(target,false);
+      }
+    }
+
+    // ---------- countdown mode ----------
+    function resetCountdown(){
+      clearTimeout(cdTimer); cdTimer=null;
+      const dur=flipAway[current]>0?flipAway[current]:0;
+      cdRemaining=dur*1000;
+      updateCdPill();
+      if(playing) startCountdown();
+    }
+    function startCountdown(){
+      clearTimeout(cdTimer);
+      if(current>=pages.length-1 || cdRemaining<=0){ updateCdPill(); return; }
+      cdStartTs=Date.now();
+      cdTimer=setTimeout(()=>{ nextPage(false); }, cdRemaining);
+      tickCdPill();
+    }
+    function pauseCountdown(){
+      clearTimeout(cdTimer); cdTimer=null;
+      if(cdStartTs){ cdRemaining-=(Date.now()-cdStartTs); cdStartTs=0; }
+    }
+    let cdPillTimer=null;
+    function tickCdPill(){
+      clearInterval(cdPillTimer);
+      cdPillTimer=setInterval(()=>{
+        if(!playing || mode!=='countdown'){ clearInterval(cdPillTimer); return; }
+        updateCdPill();
+      },200);
+    }
+    function updateCdPill(){
+      if(mode!=='countdown')return;
+      let rem=cdRemaining;
+      if(playing && cdStartTs) rem=cdRemaining-(Date.now()-cdStartTs);
+      if(current>=pages.length-1){ $('cdPill').textContent='最后一页'; return; }
+      if(flipAway[current]<=0){ $('cdPill').textContent='本页不自动翻页'; return; }
+      $('cdPill').textContent='倒计时 '+Math.max(0,rem/1000).toFixed(1)+'s';
+    }
+
+    // ---------- play / pause ----------
+    function play(){
+      playing=true;
+      if(hasAudio()) audio.play().catch(()=>{});
+      if(mode==='countdown') startCountdown();
+      updatePlayBtn();
+    }
+    function pause(){
+      playing=false;
+      if(hasAudio()) audio.pause();
+      if(mode==='countdown') pauseCountdown();
+      updatePlayBtn();
+    }
+    function togglePlay(){ playing?pause():play(); }
+    function updatePlayBtn(){ $('playBtn').textContent=playing?'⏸':'▶'; }
+
+    // ---------- speed ----------
+    function setSpeed(v){
+      v=Math.min(2.0,Math.max(0.1,Math.round(v*10)/10));
+      $('speedRange').value=v;
+      $('speedVal').textContent=v.toFixed(1)+'x';
+      if(hasAudio()) audio.playbackRate=v;
+    }
+
+    // ---------- A-B loop ----------
+    function refreshAB(){
+      const dur=audio.duration||1;
+      const mA=$('markerA'), mB=$('markerB'), fill=$('abFill');
+      if(loopA!=null){ mA.style.display='block'; mA.style.left=(loopA/dur*100)+'%'; }else mA.style.display='none';
+      if(loopB!=null){ mB.style.display='block'; mB.style.left=(loopB/dur*100)+'%'; }else mB.style.display='none';
+      if(loopA!=null&&loopB!=null){ fill.style.display='block'; fill.style.left=(loopA/dur*100)+'%'; fill.style.width=((loopB-loopA)/dur*100)+'%'; }
+      else fill.style.display='none';
+    }
+
+    // ---------- fullscreen ----------
+    let hideTimer=null;
+    function inFullscreen(){ return document.fullscreenElement || $('root').classList.contains('pseudo-fs'); }
+    function enterFs(){
+      const el=$('root');
+      if(el.requestFullscreen){ el.requestFullscreen().catch(()=>pseudoFs(true)); }
+      else if(el.webkitRequestFullscreen){ el.webkitRequestFullscreen(); }
+      else pseudoFs(true);
+      $('fsBtn').textContent='⛶ 退出';
+      scheduleHide();
+    }
+    function exitFs(){
+      if(document.fullscreenElement){ document.exitFullscreen().catch(()=>{}); }
+      else if(document.webkitFullscreenElement){ document.webkitExitFullscreen(); }
+      pseudoFs(false);
+      $('fsBtn').textContent='⛶ 全屏';
+      showControls();
+      clearTimeout(hideTimer);
+    }
+    function pseudoFs(on){
+      const el=$('root');
+      if(on){ el.classList.add('pseudo-fs'); document.documentElement.style.overflow='hidden'; }
+      else { el.classList.remove('pseudo-fs'); document.documentElement.style.overflow=''; }
+    }
+    function toggleFs(){ inFullscreen()?exitFs():enterFs(); }
+    document.addEventListener('fullscreenchange',()=>{
+      if(!document.fullscreenElement && !$('root').classList.contains('pseudo-fs')){
+        $('fsBtn').textContent='⛶ 全屏'; showControls(); clearTimeout(hideTimer);
+      }
+    });
+    function showControls(){ $('controls').classList.remove('player-hidden'); $('topBar').classList.remove('player-hidden'); }
+    function hideControls(){ if(inFullscreen()){ $('controls').classList.add('player-hidden'); $('topBar').classList.add('player-hidden'); } }
+    function scheduleHide(){ clearTimeout(hideTimer); if(inFullscreen()) hideTimer=setTimeout(hideControls,2600); }
+    function onActivity(){ showControls(); scheduleHide(); }
+
+    // ---------- bind ----------
+    function bindControls(){
+      $('playBtn').addEventListener('click',togglePlay);
+      $('prevBtn').addEventListener('click',()=>prevPage(true));
+      $('nextBtn').addEventListener('click',()=>nextPage(true));
+      $('cntLeft').addEventListener('click',()=>prevPage(true));
+      $('cntRight').addEventListener('click',()=>nextPage(true));
+      $('navLeft').addEventListener('click',()=>prevPage(true));
+      $('navRight').addEventListener('click',()=>nextPage(true));
+
+      $('fsBtn').addEventListener('click',toggleFs);
+
+      // speed
+      $('speedRange').addEventListener('input',e=>setSpeed(parseFloat(e.target.value)));
+      $('speedDown').addEventListener('click',()=>setSpeed(parseFloat($('speedRange').value)-0.1));
+      $('speedUp').addEventListener('click',()=>setSpeed(parseFloat($('speedRange').value)+0.1));
+
+      // progress seek
+      const bar=$('progressBar');
+      function seekAt(clientX){
+        const r=bar.getBoundingClientRect();
+        const ratio=Math.min(1,Math.max(0,(clientX-r.left)/r.width));
+        if(hasAudio() && audio.duration) audio.currentTime=ratio*audio.duration;
+      }
+      let dragging=false;
+      bar.addEventListener('pointerdown',e=>{ dragging=true; seekAt(e.clientX); });
+      window.addEventListener('pointermove',e=>{ if(dragging) seekAt(e.clientX); });
+      window.addEventListener('pointerup',()=>{ dragging=false; });
+
+      // A-B
+      $('setA').addEventListener('click',()=>{
+        if(!hasAudio())return; loopA=audio.currentTime;
+        if(loopB!=null && loopB<=loopA) loopB=null;
+        $('setA').classList.add('active'); refreshAB(); toast('已设起点 A：'+fmt(loopA),'ok');
+      });
+      $('setB').addEventListener('click',()=>{
+        if(!hasAudio())return;
+        const t=audio.currentTime;
+        if(loopA==null){ toast('请先设置起点 A','err'); return; }
+        if(t<=loopA){ toast('终点 B 必须晚于起点 A','err'); return; }
+        loopB=t; $('setB').classList.add('active'); refreshAB(); toast('已设终点 B：'+fmt(loopB),'ok');
+      });
+      $('clearAB').addEventListener('click',()=>{
+        loopA=loopB=null; $('setA').classList.remove('active'); $('setB').classList.remove('active'); refreshAB(); toast('已取消循环','ok');
+      });
+
+      // fullscreen auto-hide activity
+      ['mousemove','touchstart','click','keydown'].forEach(ev=>document.addEventListener(ev,onActivity,{passive:true}));
+
+      // keyboard shortcuts
+      document.addEventListener('keydown',e=>{
+        if(e.code==='Space'){ e.preventDefault(); togglePlay(); }
+        else if(e.code==='ArrowRight'){ nextPage(true); }
+        else if(e.code==='ArrowLeft'){ prevPage(true); }
+        else if(e.key==='f'||e.key==='F'){ toggleFs(); }
+      });
+    }
+
+    init();
+  </script>
+
+  <style>
+    /* pseudo fullscreen fallback (iOS etc.) */
+    .player-root.pseudo-fs { position: fixed; inset: 0; z-index: 9999; width:100vw; height:100vh; }
+  </style>
+</body>
+</html>
