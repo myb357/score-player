@@ -65,6 +65,8 @@
           <a class="settings-item" href="/users" id="usersBtn" role="menuitem" style="display:none;">用户管理</a>
           <button class="settings-item" id="pwdBtn" type="button" role="menuitem">修改密码</button>
           <a class="settings-item" href="/download/android" id="downloadAndroidBtn" role="menuitem">下载 Android App</a>
+          <button class="settings-item" id="checkUpdateBtn" type="button" role="menuitem">检查更新</button>
+          <button class="settings-item" id="aboutBtn" type="button" role="menuitem">关于</button>
           <button class="settings-item" id="clearCacheBtn" type="button" role="menuitem">清除缓存</button>
           <button class="settings-item danger" id="logoutBtn" type="button" role="menuitem">退出登录</button>
         </div>
@@ -118,6 +120,26 @@
     </div>
   </div>
 
+  <!-- 关于 modal -->
+  <div class="modal-overlay" id="aboutModal" style="display:none;">
+    <div class="panel modal-card">
+      <h2>关于谱子播放器</h2>
+      <div class="sub">App 基础信息</div>
+      <div class="form-row">
+        <div><strong>App 名称：</strong>谱子播放器</div>
+      </div>
+      <div class="form-row">
+        <div><strong>当前版本：</strong>v<span id="aboutVersion">1.0.7</span></div>
+      </div>
+      <div class="form-row">
+        <div><strong>说明：</strong>用于管理、导入和播放曲谱，支持 Android App 与网页端使用。</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="aboutClose">知道了</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-wrap" id="toasts"></div>
 
   <script>
@@ -136,6 +158,33 @@
       t.textContent = msg;
       w.appendChild(t);
       setTimeout(() => t.remove(), 2600);
+    }
+
+    const CURRENT_APP_VERSION = '1.0.7';
+    function compareVersions(remote, current) {
+      const remoteParts = String(remote || '').split('.');
+      const currentParts = String(current || '').split('.');
+      const length = Math.max(remoteParts.length, currentParts.length);
+      for (let i = 0; i < length; i++) {
+        const remoteValue = parseInt((remoteParts[i] || '0').replace(/[^0-9]/g, ''), 10) || 0;
+        const currentValue = parseInt((currentParts[i] || '0').replace(/[^0-9]/g, ''), 10) || 0;
+        if (remoteValue !== currentValue) return remoteValue - currentValue;
+      }
+      return 0;
+    }
+
+    async function checkAppUpdate() {
+      const res = await fetch(API_BASE + '/api/version', { cache: 'no-store' });
+      if (!res.ok) throw new Error('version check failed');
+      const data = await res.json();
+      const latestVersion = String(data.version || '').trim();
+      if (!latestVersion) throw new Error('missing version');
+      if (compareVersions(latestVersion, CURRENT_APP_VERSION) > 0) {
+        const shouldUpdate = confirm('发现新版本 v' + latestVersion + '，是否立即更新？');
+        if (shouldUpdate) window.location.href = data.apk_url || (API_BASE + '/download/android');
+      } else {
+        toast('当前已是最新版本', 'ok');
+      }
     }
 
     const settingsMenu = document.getElementById('settingsMenu');
@@ -282,6 +331,32 @@
     document.getElementById('downloadAndroidBtn').addEventListener('click', (e) => {
       e.preventDefault(); closeSettingsMenu();
       window.location.href = API_BASE + '/download/android';
+    });
+    document.getElementById('checkUpdateBtn').addEventListener('click', async () => {
+      closeSettingsMenu();
+      const btn = document.getElementById('checkUpdateBtn');
+      btn.disabled = true;
+      btn.textContent = '检查中...';
+      try {
+        await checkAppUpdate();
+      } catch (e) {
+        toast('检查更新失败，请稍后重试', 'err');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '检查更新';
+      }
+    });
+    const aboutModal = document.getElementById('aboutModal');
+    document.getElementById('aboutBtn').addEventListener('click', () => {
+      closeSettingsMenu();
+      document.getElementById('aboutVersion').textContent = CURRENT_APP_VERSION;
+      aboutModal.style.display = 'grid';
+    });
+    document.getElementById('aboutClose').addEventListener('click', () => {
+      aboutModal.style.display = 'none';
+    });
+    aboutModal.addEventListener('click', (e) => {
+      if (e.target === aboutModal) aboutModal.style.display = 'none';
     });
 
     const importBtn = document.getElementById('importBtn');
