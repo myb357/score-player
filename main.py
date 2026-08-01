@@ -14,6 +14,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, Form
@@ -708,8 +709,13 @@ def _safe_ext(filename: str, allowed: set) -> Optional[str]:
 
 def _safe_zip_name(filename: str, fallback: str) -> str:
     base = posixpath.basename(filename or "").strip()
-    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    base = re.sub(r"[\\/:*?\"<>|]+", "", base).strip()
     return base or fallback
+
+
+def _content_disposition_attachment(filename: str) -> str:
+    quoted = quote(filename.encode("utf-8"))
+    return f"attachment; filename*=UTF-8''{quoted}"
 
 
 def _media_manifest_name(filename: Optional[str]) -> Optional[str]:
@@ -775,7 +781,7 @@ async def export_score(request: Request, score_id: int):
     return Response(
         content=zip_buffer.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{safe_title}.zip"'},
+        headers={"Content-Disposition": _content_disposition_attachment(f"{safe_title}.zip")},
     )
 
 
@@ -875,7 +881,7 @@ async def batch_export_scores(request: Request):
                 package_name = base_name
                 idx = 2
                 while package_name in used_names:
-                    package_name = f"{base_name}_{idx}"
+                    package_name = f"{base_name}({idx})"
                     idx += 1
                 used_names.add(package_name)
                 _write_score_package(zf, row, package_name)
@@ -883,10 +889,12 @@ async def batch_export_scores(request: Request):
         return JSONResponse(status_code=500, content={"detail": f"批量导出失败: {e}"})
 
     zip_buffer.seek(0)
+    export_time = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M%S")
+    export_filename = f"谱子导出_{export_time}.zip"
     return Response(
         content=zip_buffer.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="scores_export.zip"'},
+        headers={"Content-Disposition": _content_disposition_attachment(export_filename)},
     )
 
 

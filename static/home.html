@@ -318,7 +318,9 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'scores_export.zip';
+        const contentDisposition = res.headers.get('Content-Disposition') || '';
+        const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+        a.download = match ? decodeURIComponent(match[1]) : 'scores_export.zip';
         document.body.appendChild(a);
         a.click();
         a.remove();
