@@ -77,8 +77,8 @@
       <h1>我的谱子</h1>
       <div class="page-actions">
         <div class="view-toggle" id="viewToggle" role="group" aria-label="视图模式切换" style="display:none;">
-          <button class="view-btn active" id="cardViewBtn" type="button" aria-pressed="true" title="卡片视图">▦</button>
-          <button class="view-btn" id="listViewBtn" type="button" aria-pressed="false" title="列表视图">☰</button>
+          <button class="view-btn" id="cardViewBtn" type="button" aria-pressed="false" title="卡片视图">▦</button>
+          <button class="view-btn active" id="listViewBtn" type="button" aria-pressed="true" title="列表视图">☰</button>
         </div>
         <button class="btn btn-ghost" id="batchToggleBtn" type="button" style="display:none;">批量选择</button>
       </div>
@@ -368,7 +368,7 @@
     const SCORE_VIEW_MODE_KEY = 'score-player:home-view-mode';
     let scoreList = [];
     let batchMode = false;
-    let viewMode = localStorage.getItem(SCORE_VIEW_MODE_KEY) === 'list' ? 'list' : 'card';
+    let viewMode = localStorage.getItem(SCORE_VIEW_MODE_KEY) === 'card' ? 'card' : 'list';
     const selectedScores = new Set();
     const viewToggle = document.getElementById('viewToggle');
     const cardViewBtn = document.getElementById('cardViewBtn');
