@@ -138,21 +138,38 @@ def b2_presigned_url(key: str, ttl: int = PRESIGN_TTL) -> str:
     )
 
 
-def b2_delete_prefix(prefix: str) -> None:
+def b2_list_keys(prefix: str) -> List[str]:
     s3 = get_s3()
     token = None
+    keys: List[str] = []
     while True:
         kwargs = {"Bucket": B2_BUCKET, "Prefix": prefix}
         if token:
             kwargs["ContinuationToken"] = token
         resp = s3.list_objects_v2(**kwargs)
-        objs = [{"Key": o["Key"]} for o in resp.get("Contents", [])]
-        if objs:
-            s3.delete_objects(Bucket=B2_BUCKET, Delete={"Objects": objs})
+        keys.extend(o["Key"] for o in resp.get("Contents", []))
         if resp.get("IsTruncated"):
             token = resp.get("NextContinuationToken")
         else:
             break
+    return keys
+
+
+def b2_delete_keys(keys: List[str]) -> None:
+    if not keys:
+        return
+    s3 = get_s3()
+    for i in range(0, len(keys), 1000):
+        objs = [{"Key": k} for k in keys[i : i + 1000]]
+        s3.delete_objects(Bucket=B2_BUCKET, Delete={"Objects": objs})
+
+
+def b2_delete_key(key: str) -> None:
+    get_s3().delete_object(Bucket=B2_BUCKET, Key=key)
+
+
+def b2_delete_prefix(prefix: str) -> None:
+    b2_delete_keys(b2_list_keys(prefix))
 
 
 # ----------------------------------------------------------------------------
@@ -589,15 +606,16 @@ async def api_delete_user(request: Request, user_id: int):
             return JSONResponse(
                 status_code=400, content={"detail": "不能删除最后一个超级管理员"}
             )
-    # collect the user's scores so we can clean their B2 objects after cascade delete
+    # collect and remove the user's score objects before DB cascade to avoid B2 orphans
     sids = db_query("SELECT id FROM scores WHERE owner_id = %s", (user_id,)) or []
-    db_query("DELETE FROM users WHERE id = %s", (user_id,))  # cascades scores/pages/sessions
+    keys_to_delete: List[str] = []
     for s in sids:
-        try:
-            b2_delete_prefix(f"scores/{s['id']}/")
-        except Exception:
-            pass
-    return {"ok": True}
+        keys_to_delete.extend(b2_list_keys(f"scores/{s['id']}/"))
+    b2_delete_keys(keys_to_delete)
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))  # cascades scores/pages/sessions
+    return {"ok": True, "b2_deleted": len(keys_to_delete)}
 
 
 @app.post("/api/users/{user_id}/password")
@@ -886,13 +904,15 @@ async def batch_delete_scores(request: Request):
     if len(rows) != len(ids):
         return JSONResponse(status_code=403, content={"detail": "部分谱子不存在或无权删除"})
 
-    db_query("DELETE FROM scores WHERE id = ANY(%s)", (ids,))
-    for score_id in ids:
-        try:
-            b2_delete_prefix(f"scores/{score_id}/")
-        except Exception:
-            pass
-    return {"ok": True, "deleted": len(ids)}
+    prefixes = [f"scores/{score_id}/" for score_id in ids]
+    keys_to_delete: List[str] = []
+    for prefix in prefixes:
+        keys_to_delete.extend(b2_list_keys(prefix))
+    b2_delete_keys(keys_to_delete)
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM scores WHERE id = ANY(%s)", (ids,))
+    return {"ok": True, "deleted": len(ids), "b2_deleted": len(keys_to_delete)}
 
 
 @app.post("/api/scores/import")
@@ -1224,13 +1244,12 @@ async def delete_score(request: Request, score_id: int):
         return JSONResponse(status_code=404, content={"detail": "谱子不存在"})
     if me["role"] != "superadmin" and row["owner_id"] != me["id"]:
         return JSONResponse(status_code=403, content={"detail": "无权删除该谱子"})
-    db_query("DELETE FROM scores WHERE id = %s", (score_id,))
-    # Remove associated objects from B2 (best-effort)
-    try:
-        b2_delete_prefix(f"scores/{score_id}/")
-    except Exception:
-        pass
-    return {"ok": True}
+    keys_to_delete = b2_list_keys(f"scores/{score_id}/")
+    b2_delete_keys(keys_to_delete)
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM scores WHERE id = %s", (score_id,))
+    return {"ok": True, "b2_deleted": len(keys_to_delete)}
 
 
 # ----------------------------------------------------------------------------
@@ -1357,8 +1376,11 @@ async def update_score(
                             os.remove(p)
                         except OSError:
                             pass
-            b2_upload_bytes(_score_key(score_id, "audio.mp3"), abytes, "audio/mpeg")
-            audio_filename = "audio.mp3"
+            new_audio_filename = f"audio_{secrets.token_hex(8)}.mp3"
+            new_audio_key = _score_key(score_id, new_audio_filename)
+            b2_upload_bytes(new_audio_key, abytes, "audio/mpeg")
+            new_uploaded_keys.append(new_audio_key)
+            audio_filename = new_audio_filename
             replaced_audio = True
 
         if mode == "audio" and not audio_filename:
@@ -1392,12 +1414,44 @@ async def update_score(
             get_s3().delete_object(Bucket=B2_BUCKET, Key=_score_key(score_id, fn))
         except Exception:
             pass
-    if audio_action == "remove" and row["audio_filename"]:
+    old_audio_filename = row["audio_filename"]
+    if old_audio_filename and (audio_action == "remove" or replaced_audio):
         try:
-            get_s3().delete_object(Bucket=B2_BUCKET, Key=_score_key(score_id, "audio.mp3"))
+            b2_delete_key(_score_key(score_id, old_audio_filename))
         except Exception:
             pass
     return {"ok": True, "id": score_id}
+
+
+@app.post("/api/admin/b2/cleanup-orphans")
+async def cleanup_b2_orphans(request: Request):
+    if not is_superadmin(request):
+        return JSONResponse(status_code=403, content={"detail": "需要超级管理员权限"})
+    dry_run = (request.query_params.get("dry_run", "false").lower() in ("1", "true", "yes", "on"))
+
+    rows = db_query("SELECT id, audio_filename FROM scores") or []
+    pages = db_query("SELECT score_id, image_filename FROM pages") or []
+    referenced_keys = set()
+    for row in rows:
+        if row.get("audio_filename"):
+            referenced_keys.add(_score_key(row["id"], row["audio_filename"]))
+    for page in pages:
+        if page.get("image_filename"):
+            referenced_keys.add(_score_key(page["score_id"], page["image_filename"]))
+
+    b2_keys = set(b2_list_keys("scores/"))
+    orphan_keys = sorted(b2_keys - referenced_keys)
+    if not dry_run:
+        b2_delete_keys(orphan_keys)
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "scanned": len(b2_keys),
+        "referenced": len(referenced_keys),
+        "orphans": len(orphan_keys),
+        "deleted": 0 if dry_run else len(orphan_keys),
+        "keys": orphan_keys[:200],
+    }
 
 
 # ----------------------------------------------------------------------------
