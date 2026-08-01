@@ -24,6 +24,8 @@
     <div class="topbar-actions">
       <a class="btn btn-ghost" href="/users" id="usersBtn" style="display:none;">用户管理</a>
       <button class="btn btn-ghost" id="pwdBtn">修改密码</button>
+      <button class="btn btn-ghost" id="importBtn">导入谱子</button>
+      <input type="file" id="importInput" accept=".zip,application/zip" hidden />
       <a class="btn btn-primary" href="/new">＋ 新建谱子</a>
       <button class="btn btn-ghost" id="logoutBtn">退出登录</button>
     </div>
@@ -73,6 +75,35 @@
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/login';
+    });
+
+    const importBtn = document.getElementById('importBtn');
+    const importInput = document.getElementById('importInput');
+    importBtn.addEventListener('click', () => importInput.click());
+    importInput.addEventListener('change', async () => {
+      const file = importInput.files && importInput.files[0];
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.zip')) { toast('请上传 ZIP 文件', 'err'); importInput.value = ''; return; }
+      const fd = new FormData();
+      fd.append('package', file, file.name);
+      importBtn.disabled = true;
+      importBtn.textContent = '导入中…';
+      try {
+        const res = await fetch('/api/scores/import', { method: 'POST', body: fd });
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.id) {
+          toast('导入成功，正在打开谱子', 'ok');
+          window.location.href = '/player/' + data.id;
+        } else {
+          toast(data.detail || '导入失败', 'err');
+        }
+      } catch (e) {
+        toast('导入失败，请重试', 'err');
+      }
+      importBtn.disabled = false;
+      importBtn.textContent = '导入谱子';
+      importInput.value = '';
     });
 
     // ---------- session / role ----------
@@ -152,6 +183,7 @@
             ? `<div class="sc-owner">创建者：<span class="badge">${escapeHtml(s.owner)}</span></div>` : '';
           card.innerHTML = `
             <div class="sc-actions">
+              <button class="btn btn-sm sc-export" data-id="${s.id}">导出</button>
               <button class="btn btn-sm sc-edit" data-id="${s.id}">编辑</button>
               <button class="btn btn-danger btn-sm sc-del" data-id="${s.id}">删除</button>
             </div>
@@ -166,6 +198,10 @@
           card.addEventListener('click', (e) => {
             if (e.target.closest('.sc-actions')) return;
             window.location.href = '/player/' + s.id;
+          });
+          card.querySelector('.sc-export').addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.location.href = '/api/scores/' + s.id + '/export';
           });
           card.querySelector('.sc-edit').addEventListener('click', (e) => {
             e.stopPropagation();

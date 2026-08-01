@@ -1,13 +1,16 @@
 import hashlib
+import io
 import json
 import mimetypes
 import os
+import posixpath
 import re
 import secrets
 import shutil
 import subprocess
 import tempfile
 import time
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
@@ -117,6 +120,14 @@ def b2_upload_bytes(key: str, data: bytes, content_type: str) -> None:
     get_s3().put_object(
         Bucket=B2_BUCKET, Key=key, Body=data, ContentType=content_type
     )
+
+
+def b2_read_bytes(key: str) -> bytes:
+    obj = get_s3().get_object(Bucket=B2_BUCKET, Key=key)
+    try:
+        return obj["Body"].read()
+    finally:
+        obj["Body"].close()
 
 
 def b2_presigned_url(key: str, ttl: int = PRESIGN_TTL) -> str:
@@ -673,6 +684,168 @@ async def list_scores(request: Request):
 def _safe_ext(filename: str, allowed: set) -> Optional[str]:
     ext = os.path.splitext(filename or "")[1].lower()
     return ext if ext in allowed else None
+
+
+def _safe_zip_name(filename: str, fallback: str) -> str:
+    base = posixpath.basename(filename or "").strip()
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    return base or fallback
+
+
+def _media_manifest_name(filename: Optional[str]) -> Optional[str]:
+    if not filename:
+        return None
+    return "audio/" + _safe_zip_name(filename, "audio.mp3")
+
+
+@app.get("/api/scores/{score_id}/export")
+async def export_score(request: Request, score_id: int):
+    me = current_user(request)
+    row = db_query(
+        "SELECT id, name, mode, audio_filename, owner_id, created_at FROM scores WHERE id = %s",
+        (score_id,),
+        one=True,
+    )
+    if not row:
+        return JSONResponse(status_code=404, content={"detail": "谱子不存在"})
+    if me["role"] != "superadmin" and row["owner_id"] != me["id"]:
+        return JSONResponse(status_code=403, content={"detail": "无权导出该谱子"})
+
+    pages = db_query(
+        "SELECT page_index, image_filename, turn_seconds FROM pages WHERE score_id = %s ORDER BY page_index",
+        (score_id,),
+    ) or []
+    manifest_pages = []
+    zip_buffer = io.BytesIO()
+    try:
+        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for p in pages:
+                image_name = _safe_zip_name(p["image_filename"], f"page_{p['page_index']:03d}.png")
+                archive_path = f"images/{p['page_index']:03d}_{image_name}"
+                zf.writestr(archive_path, b2_read_bytes(_score_key(score_id, p["image_filename"])))
+                manifest_pages.append(
+                    {
+                        "index": p["page_index"],
+                        "filename": p["image_filename"],
+                        "path": archive_path,
+                        "turn_seconds": p["turn_seconds"],
+                    }
+                )
+            audio_path = _media_manifest_name(row["audio_filename"])
+            if row["audio_filename"] and audio_path:
+                zf.writestr(audio_path, b2_read_bytes(_score_key(score_id, row["audio_filename"])))
+            manifest = {
+                "version": 1,
+                "exported_at": int(time.time()),
+                "score": {
+                    "name": row["name"],
+                    "mode": row["mode"],
+                    "audio_filename": row["audio_filename"],
+                    "created_at": row["created_at"],
+                },
+                "pages": manifest_pages,
+                "audio": {"path": audio_path, "filename": row["audio_filename"]} if audio_path else None,
+            }
+            zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": f"导出失败: {e}"})
+
+    zip_buffer.seek(0)
+    safe_title = _safe_zip_name(row["name"], f"score_{score_id}")
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.zip"'},
+    )
+
+
+@app.post("/api/scores/import")
+async def import_score(request: Request, package: UploadFile = File(...)):
+    me = current_user(request)
+    if not package or not package.filename:
+        return JSONResponse(status_code=400, content={"detail": "请上传导出的 ZIP 文件"})
+    if os.path.splitext(package.filename)[1].lower() != ".zip":
+        return JSONResponse(status_code=400, content={"detail": "仅支持导入 ZIP 文件"})
+
+    uploaded_keys: List[str] = []
+    try:
+        raw = await package.read()
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            names = set(zf.namelist())
+            if "manifest.json" not in names:
+                return JSONResponse(status_code=400, content={"detail": "ZIP 中缺少 manifest.json"})
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            score_meta = manifest.get("score") or {}
+            name = (score_meta.get("name") or "导入谱子").strip()
+            mode = score_meta.get("mode") or "audio"
+            pages_meta = manifest.get("pages") or []
+            audio_meta = manifest.get("audio") or None
+            if mode not in ("audio", "countdown"):
+                return JSONResponse(status_code=400, content={"detail": "manifest 中的翻页模式无效"})
+            if not pages_meta:
+                return JSONResponse(status_code=400, content={"detail": "manifest 中缺少谱页信息"})
+            if mode == "audio" and not (audio_meta and audio_meta.get("path")):
+                return JSONResponse(status_code=400, content={"detail": "跟伴奏模式缺少伴奏文件"})
+
+            page_rows = []
+            for idx, p in enumerate(sorted(pages_meta, key=lambda x: int(x.get("index", 0)))):
+                archive_path = p.get("path")
+                if not archive_path or archive_path not in names:
+                    return JSONResponse(status_code=400, content={"detail": f"缺少谱页文件: {archive_path or idx}"})
+                original_name = p.get("filename") or posixpath.basename(archive_path)
+                ext = _safe_ext(original_name, ALLOWED_IMAGE_EXT) or _safe_ext(archive_path, ALLOWED_IMAGE_EXT) or ".png"
+                fname = f"page_{idx:03d}{ext}"
+                try:
+                    turn = float(p.get("turn_seconds") or 0)
+                except (TypeError, ValueError):
+                    turn = 0.0
+                if turn < 0:
+                    turn = 0.0
+                page_rows.append((idx, fname, turn, zf.read(archive_path)))
+
+            audio_filename = None
+            audio_bytes = None
+            if audio_meta and audio_meta.get("path"):
+                audio_path = audio_meta.get("path")
+                if audio_path not in names:
+                    return JSONResponse(status_code=400, content={"detail": "ZIP 中缺少伴奏文件"})
+                original_audio_name = audio_meta.get("filename") or posixpath.basename(audio_path)
+                src_ext = os.path.splitext(original_audio_name or audio_path)[1].lower()
+                if src_ext not in ALLOWED_AUDIO_EXT and src_ext not in ALLOWED_VIDEO_EXT:
+                    return JSONResponse(status_code=400, content={"detail": f"不支持的伴奏文件格式: {src_ext or '未知'}"})
+                audio_filename = "audio.mp3" if src_ext != ".mp3" else "audio.mp3"
+                audio_bytes = zf.read(audio_path)
+
+        now = int(time.time())
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO scores (name, mode, audio_filename, owner_id, created_at) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (name, mode, audio_filename, me["id"], now),
+                )
+                score_id = cur.fetchone()[0]
+                for idx, fname, turn, content in page_rows:
+                    key = _score_key(score_id, fname)
+                    b2_upload_bytes(key, content, _ctype(fname))
+                    uploaded_keys.append(key)
+                    cur.execute(
+                        "INSERT INTO pages (score_id, page_index, image_filename, turn_seconds) VALUES (%s, %s, %s, %s)",
+                        (score_id, idx, fname, turn),
+                    )
+                if audio_bytes is not None:
+                    key = _score_key(score_id, audio_filename)
+                    b2_upload_bytes(key, audio_bytes, "audio/mpeg")
+                    uploaded_keys.append(key)
+        return {"ok": True, "id": score_id}
+    except zipfile.BadZipFile:
+        return JSONResponse(status_code=400, content={"detail": "ZIP 文件无法解析"})
+    except Exception as e:
+        for k in uploaded_keys:
+            try:
+                get_s3().delete_object(Bucket=B2_BUCKET, Key=k)
+            except Exception:
+                pass
+        return JSONResponse(status_code=500, content={"detail": f"导入失败: {e}"})
 
 
 @app.post("/api/scores")
