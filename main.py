@@ -527,7 +527,7 @@ async def service_worker():
 
 @app.get("/api/version")
 async def app_version():
-    return {"version": APP_VERSION, "apk_url": "https://github.com/myb357/score-player/releases/latest/download/score-player.apk"}
+    return {"version": APP_VERSION, "apk_url": "https://score-player.onrender.com/download/android"}
 
 
 @app.get("/download/android")
@@ -538,6 +538,7 @@ async def download_android_app():
         ANDROID_APK_PATH,
         media_type="application/vnd.android.package-archive",
         filename="score-player.apk",
+        content_disposition_type="attachment",
     )
 
 

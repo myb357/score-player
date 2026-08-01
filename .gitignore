@@ -5,3 +5,4 @@ __pycache__/
 /data
 score_app_data/
 score-player-source.zip
+*.apk
