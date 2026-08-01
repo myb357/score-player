@@ -41,7 +41,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.0.5")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.0.6")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -405,16 +405,27 @@ app = FastAPI(
 # CORS: the offline Android build loads the frontend from file:///android_asset/
 # (origin "null") and calls this backend cross-origin. Because we authenticate
 # with a Bearer token (not cookies), allow_credentials must be False so that
-# allow_origins=["*"] is actually honoured by the browser.
+# allow_origins=["*"] is actually honoured by the browser. Some Android
+# WebView/file:// requests send the literal Origin header "null", so keep it
+# explicitly listed as well.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*", "null"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-PUBLIC_EXACT = {"/login", "/api/login", "/api", "/api/v1/ping", "/api/version", "/favicon.ico", "/sw.js"}
+PUBLIC_EXACT = {
+    "/login",
+    "/api/login",
+    "/api",
+    "/api/v1/ping",
+    "/api/version",
+    "/api/images/auto-crop",
+    "/favicon.ico",
+    "/sw.js",
+}
 # "/api/media/" is public: it only issues a 302 redirect to a short-lived
 # presigned B2 URL. <img>/<audio> tags cannot carry the Bearer header, so the
 # offline app needs to reach media without an Authorization header.
@@ -1174,10 +1185,22 @@ async def api_auto_crop_image(image: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"detail": "不支持的图片文件格式"})
     try:
         content = await image.read()
+        if not content:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "图片内容为空，可能是跨域上传问题"},
+            )
         with Image.open(BytesIO(content)) as img:
             image_size = {"width": img.width, "height": img.height}
         return {"ok": True, "box": detect_light_margin_crop_box(content), "image": image_size}
     except Exception as e:
+        import traceback
+
+        print(
+            f"[auto-crop error] filename={image.filename}, "
+            f"content_len={len(content) if 'content' in dir() else 'N/A'}, error={e}"
+        )
+        traceback.print_exc()
         return JSONResponse(status_code=400, content={"detail": f"图片自动裁剪失败: {e}"})
 
 
