@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     JSONResponse,
     HTMLResponse,
@@ -40,7 +41,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.0.1")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.0.3")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -401,8 +402,36 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
+# CORS: the offline Android build loads the frontend from file:///android_asset/
+# (origin "null") and calls this backend cross-origin. Because we authenticate
+# with a Bearer token (not cookies), allow_credentials must be False so that
+# allow_origins=["*"] is actually honoured by the browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 PUBLIC_EXACT = {"/login", "/api/login", "/api", "/api/v1/ping", "/api/version", "/favicon.ico", "/sw.js"}
-PUBLIC_PREFIX = ("/assets/", "/static/", "/api/docs", "/api/redoc", "/api/openapi.json")
+# "/api/media/" is public: it only issues a 302 redirect to a short-lived
+# presigned B2 URL. <img>/<audio> tags cannot carry the Bearer header, so the
+# offline app needs to reach media without an Authorization header.
+PUBLIC_PREFIX = ("/assets/", "/static/", "/api/docs", "/api/redoc", "/api/openapi.json", "/api/media/")
+
+
+def _extract_token(request: Request) -> Optional[str]:
+    """Resolve the session token from either the Bearer header (offline app) or
+    the ``sid`` cookie (legacy web, backward compatible)."""
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if auth:
+        parts = auth.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1].strip()
+            if token:
+                return token
+    return request.cookies.get(SESSION_COOKIE)
 
 
 @app.middleware("http")
@@ -410,7 +439,7 @@ async def auth_gate(request: Request, call_next):
     path = request.url.path
     if path in PUBLIC_EXACT or any(path.startswith(p) for p in PUBLIC_PREFIX):
         return await call_next(request)
-    user = get_session_user(request.cookies.get(SESSION_COOKIE))
+    user = get_session_user(_extract_token(request))
     if user:
         request.state.user = user
         return await call_next(request)
@@ -543,7 +572,9 @@ async def api_login(request: Request):
 
     cleanup_sessions()
     token = create_session(row["id"])
-    resp = JSONResponse(content={"ok": True})
+    # Dual-mode: return the token in JSON (offline app stores it as a Bearer
+    # token in localStorage) AND set the httponly cookie (legacy web version).
+    resp = JSONResponse(content={"ok": True, "token": token})
     resp.set_cookie(
         key=SESSION_COOKIE,
         value=token,
@@ -558,7 +589,7 @@ async def api_login(request: Request):
 
 @app.post("/api/logout")
 async def api_logout(request: Request):
-    token = request.cookies.get(SESSION_COOKIE)
+    token = _extract_token(request)
     destroy_session(token)
     resp = JSONResponse(content={"ok": True})
     resp.delete_cookie(SESSION_COOKIE, path="/")

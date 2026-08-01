@@ -11,13 +11,37 @@
   <meta name="apple-mobile-web-app-title" content="谱子播放器">
   <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
   <link rel="stylesheet" href="/assets/style.css" />
+  <script>
+    /* ---- 方案B: offline/web dual-mode runtime ---- */
+    var IS_FILE = location.protocol === 'file:';
+    var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
+    function authToken() { try { return localStorage.getItem('auth_token') || ''; } catch (e) { return ''; } }
+    function mediaUrl(u) { return (u && u.charAt(0) === '/') ? (API_BASE + u) : u; }
+    function apiFetch(path, opts) {
+      opts = opts || {};
+      var url = /^https?:/i.test(path) ? path : (API_BASE + path);
+      var headers = new Headers(opts.headers || {});
+      var t = authToken();
+      if (t) headers.set('Authorization', 'Bearer ' + t);
+      opts.headers = headers;
+      return fetch(url, opts);
+    }
+    function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
+    function goLogin() { location.href = IS_FILE ? 'login.html' : '/login'; }
+    function goPlayer(id) { location.href = IS_FILE ? ('player.html?id=' + id) : ('/player/' + id); }
+    if (IS_FILE) {
+      var _cssLink = document.createElement('link');
+      _cssLink.rel = 'stylesheet'; _cssLink.href = 'style.css';
+      document.head.appendChild(_cssLink);
+    }
+  </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css" />
 </head>
 <body>
   <div class="topbar">
     <div class="brand"><span class="logo">🎼</span> <span id="brandText">新建谱子</span></div>
     <div class="topbar-actions">
-      <a class="btn btn-ghost" href="/">返回主页</a>
+      <a class="btn btn-ghost" href="/" id="backHomeBtn">返回主页</a>
     </div>
   </div>
 
@@ -114,7 +138,7 @@
     </div>
 
     <div class="form-actions">
-      <a class="btn btn-ghost" href="/">取消</a>
+      <a class="btn btn-ghost" href="/" id="cancelBtn">取消</a>
       <button class="btn btn-primary" id="saveBtn">保存谱子</button>
     </div>
   </div>
@@ -230,8 +254,8 @@
     async function requestAutoCropBox(file) {
       const fd = new FormData();
       fd.append('image', file, file.name);
-      const res = await fetch('/api/images/auto-crop', { method: 'POST', body: fd });
-      if (res.status === 401) { window.location.href = '/login'; return null; }
+      const res = await apiFetch('/api/images/auto-crop', { method: 'POST', body: fd });
+      if (res.status === 401) { goLogin(); return null; }
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '自动裁剪接口异常');
       return res.json();
     }
@@ -463,11 +487,11 @@
       document.getElementById('brandText').textContent = '编辑谱子';
       document.getElementById('saveBtn').textContent = '保存更新';
       try {
-        const res = await fetch('/api/scores/' + editId);
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await apiFetch('/api/scores/' + editId);
+        if (res.status === 401) { goLogin(); return; }
         if (res.status === 403 || res.status === 404) {
           toast(res.status === 403 ? '无权编辑该谱子' : '谱子不存在', 'err');
-          setTimeout(() => window.location.href = '/', 900);
+          setTimeout(() => goHome(), 900);
           return;
         }
         const data = await res.json();
@@ -475,7 +499,7 @@
         setMode(data.mode || 'audio');
         pages = (data.pages || []).map(p => ({
           id: ++uid, turn: (p.turn_seconds == null ? '' : p.turn_seconds),
-          kind: 'existing', filename: p.filename, url: p.image_url, name: p.filename,
+          kind: 'existing', filename: p.filename, url: mediaUrl(p.image_url), name: p.filename,
         }));
         renderPages();
 
@@ -484,7 +508,7 @@
           audioAction = 'keep';
           audioChoice.style.display = 'block';
           const ea = document.getElementById('existingAudio');
-          ea.src = data.audio_url;
+          ea.src = mediaUrl(data.audio_url);
           ea.style.display = 'block';
           uploadArea.style.display = 'none'; // hidden until 替换 chosen
         } else {
@@ -494,7 +518,7 @@
         }
       } catch (e) {
         toast('加载失败，请重试', 'err');
-        setTimeout(() => window.location.href = '/', 900);
+        setTimeout(() => goHome(), 900);
       }
     }
 
@@ -526,13 +550,13 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner"></span> 处理中…';
         try {
-          const res = await fetch('/api/scores', { method: 'POST', body: fd });
-          if (res.status === 401) { window.location.href = '/login'; return; }
+          const res = await apiFetch('/api/scores', { method: 'POST', body: fd });
+          if (res.status === 401) { goLogin(); return; }
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
             clearScoreListCache();
             toast('保存成功', 'ok');
-            setTimeout(() => window.location.href = '/player/' + data.id, 600);
+            setTimeout(() => goPlayer(data.id), 600);
             return;
           }
           toast(data.detail || '保存失败', 'err');
@@ -592,14 +616,14 @@
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span> 处理中…';
       try {
-        const res = await fetch('/api/scores/' + editId + '/update', { method: 'POST', body: fd });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await apiFetch('/api/scores/' + editId + '/update', { method: 'POST', body: fd });
+        if (res.status === 401) { goLogin(); return; }
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           await clearScoreCache(data.id || editId);
           clearScoreListCache();
           toast('保存成功', 'ok');
-          setTimeout(() => window.location.href = '/player/' + (data.id || editId), 600);
+          setTimeout(() => goPlayer(data.id || editId), 600);
           return;
         }
         toast(data.detail || '保存失败', 'err');
@@ -611,6 +635,10 @@
     });
 
     // ---------- init ----------
+    ['backHomeBtn', 'cancelBtn'].forEach((bid) => {
+      const el = document.getElementById(bid);
+      if (el) el.addEventListener('click', (e) => { e.preventDefault(); goHome(); });
+    });
     if (isEdit) loadForEdit();
   </script>
 </body>

@@ -5,6 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>登录 · 谱子播放器</title>
   <link rel="stylesheet" href="/assets/style.css" />
+  <script>
+    /* ---- 方案B: offline/web dual-mode runtime ---- */
+    var IS_FILE = location.protocol === 'file:';
+    var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
+    function apiFetch(path, opts) {
+      opts = opts || {};
+      var url = /^https?:/i.test(path) ? path : (API_BASE + path);
+      opts.headers = new Headers(opts.headers || {});
+      return fetch(url, opts);
+    }
+    function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
+    if (IS_FILE) {
+      var _cssLink = document.createElement('link');
+      _cssLink.rel = 'stylesheet'; _cssLink.href = 'style.css';
+      document.head.appendChild(_cssLink);
+    }
+  </script>
 </head>
 <body>
   <div class="auth-wrap">
@@ -34,7 +51,7 @@
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>';
       try {
-        const res = await fetch('/api/login', {
+        const res = await apiFetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -43,7 +60,9 @@
           }),
         });
         if (res.ok) {
-          window.location.href = '/';
+          const data = await res.json().catch(() => ({}));
+          if (data.token) { try { localStorage.setItem('auth_token', data.token); } catch (e) {} }
+          goHome();
           return;
         }
         const data = await res.json().catch(() => ({}));

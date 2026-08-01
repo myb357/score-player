@@ -11,6 +11,33 @@
   <meta name="apple-mobile-web-app-title" content="谱子播放器">
   <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
   <link rel="stylesheet" href="/assets/style.css" />
+  <script>
+    /* ---- 方案B: offline/web dual-mode runtime ---- */
+    var IS_FILE = location.protocol === 'file:';
+    var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
+    function authToken() { try { return localStorage.getItem('auth_token') || ''; } catch (e) { return ''; } }
+    function clearAuthToken() { try { localStorage.removeItem('auth_token'); } catch (e) {} }
+    function mediaUrl(u) { return (u && u.charAt(0) === '/') ? (API_BASE + u) : u; }
+    function apiFetch(path, opts) {
+      opts = opts || {};
+      var url = /^https?:/i.test(path) ? path : (API_BASE + path);
+      var headers = new Headers(opts.headers || {});
+      var t = authToken();
+      if (t) headers.set('Authorization', 'Bearer ' + t);
+      opts.headers = headers;
+      return fetch(url, opts);
+    }
+    function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
+    function goLogin() { location.href = IS_FILE ? 'login.html' : '/login'; }
+    function goUsers() { location.href = IS_FILE ? 'users.html' : '/users'; }
+    function goPlayer(id) { location.href = IS_FILE ? ('player.html?id=' + id) : ('/player/' + id); }
+    function goNew(editId) { location.href = (IS_FILE ? 'new.html' : '/new') + (editId ? '?edit=' + editId : ''); }
+    if (IS_FILE) {
+      var _cssLink = document.createElement('link');
+      _cssLink.rel = 'stylesheet'; _cssLink.href = 'style.css';
+      document.head.appendChild(_cssLink);
+    }
+  </script>
   <style>
     .modal-overlay { position: fixed; inset: 0; background: rgba(5,6,12,.66); backdrop-filter: blur(4px); z-index: 200; display: grid; place-items: center; padding: 20px; }
     .modal-card { width: 100%; max-width: 420px; padding: 26px; }
@@ -31,7 +58,7 @@
     <div class="topbar-actions">
       <button class="btn btn-ghost" id="importBtn">导入谱子</button>
       <input type="file" id="importInput" accept=".zip,application/zip" hidden />
-      <a class="btn btn-primary" href="/new">＋ 新建谱子</a>
+      <a class="btn btn-primary" id="newScoreBtn" href="/new">＋ 新建谱子</a>
       <div class="settings-menu" id="settingsMenu">
         <button class="btn btn-ghost btn-icon settings-toggle" id="settingsBtn" type="button" aria-label="设置" aria-haspopup="true" aria-expanded="false">⚙</button>
         <div class="settings-dropdown" id="settingsDropdown" role="menu">
@@ -94,7 +121,7 @@
   <div class="toast-wrap" id="toasts"></div>
 
   <script>
-    if ('serviceWorker' in navigator) {
+    if (location.protocol !== 'file:' && 'serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js').catch(() => {});
       });
@@ -244,8 +271,17 @@
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       closeSettingsMenu();
-      await fetch('/api/logout', { method: 'POST' });
-      window.location.href = '/login';
+      try { await apiFetch('/api/logout', { method: 'POST' }); } catch (e) {}
+      clearAuthToken();
+      goLogin();
+    });
+
+    // Navigation bindings that must work under file:// (offline app) as well as web.
+    document.getElementById('newScoreBtn').addEventListener('click', (e) => { e.preventDefault(); goNew(); });
+    document.getElementById('usersBtn').addEventListener('click', (e) => { e.preventDefault(); closeSettingsMenu(); goUsers(); });
+    document.getElementById('downloadAndroidBtn').addEventListener('click', (e) => {
+      e.preventDefault(); closeSettingsMenu();
+      window.location.href = API_BASE + '/download/android';
     });
 
     const importBtn = document.getElementById('importBtn');
@@ -260,12 +296,12 @@
       importBtn.disabled = true;
       importBtn.textContent = '导入中…';
       try {
-        const res = await fetch('/api/scores/import', { method: 'POST', body: fd });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await apiFetch('/api/scores/import', { method: 'POST', body: fd });
+        if (res.status === 401) { goLogin(); return; }
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.id) {
           toast('导入成功，正在打开谱子', 'ok');
-          window.location.href = '/player/' + data.id;
+          goPlayer(data.id);
         } else {
           toast(data.detail || '导入失败', 'err');
         }
@@ -281,8 +317,8 @@
     let currentRole = 'user';
     async function loadSession() {
       try {
-        const res = await fetch('/api/session');
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await apiFetch('/api/session');
+        if (res.status === 401) { goLogin(); return; }
         const data = await res.json();
         currentRole = data.role;
         if (data.role === 'superadmin') {
@@ -290,7 +326,6 @@
         }
       } catch (e) { /* ignore, load() will handle 401 */ }
     }
-
     // ---------- change password modal ----------
     const pwdModal = document.getElementById('pwdModal');
     function openPwd() {
@@ -313,12 +348,12 @@
       const btn = document.getElementById('pwdSave');
       btn.disabled = true;
       try {
-        const res = await fetch('/api/me/password', {
+        const res = await apiFetch('/api/me/password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ old_password: oldPwd, new_password: newPwd }),
         });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (res.status === 401) { goLogin(); return; }
         const data = await res.json().catch(() => ({}));
         if (res.ok) { toast('密码已修改', 'ok'); closePwd(); }
         else toast(data.detail || '修改失败', 'err');
@@ -408,12 +443,12 @@
       batchExport.disabled = true;
       batchExport.textContent = '导出中…';
       try {
-        const res = await fetch('/api/scores/batch-export', {
+        const res = await apiFetch('/api/scores/batch-export', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ids }),
         });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (res.status === 401) { goLogin(); return; }
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           toast(data.detail || '批量导出失败', 'err');
@@ -445,12 +480,12 @@
       batchDelete.disabled = true;
       batchDelete.textContent = '删除中…';
       try {
-        const res = await fetch('/api/scores/batch-delete', {
+        const res = await apiFetch('/api/scores/batch-delete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ids }),
         });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (res.status === 401) { goLogin(); return; }
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           toast('已删除 ' + (data.deleted || ids.length) + ' 个谱子', 'ok');
@@ -495,7 +530,7 @@
           return;
         }
         saveHomeState();
-        window.location.href = '/player/' + id;
+        goPlayer(id);
       });
       const check = item.querySelector('.batch-check input');
       if (check) {
@@ -509,21 +544,34 @@
         playBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           saveHomeState();
-          window.location.href = '/player/' + id;
+          goPlayer(id);
         });
       }
-      item.querySelector('.sc-export').addEventListener('click', (e) => {
+      item.querySelector('.sc-export').addEventListener('click', async (e) => {
         e.stopPropagation();
-        window.location.href = '/api/scores/' + id + '/export';
+        try {
+          const res = await apiFetch('/api/scores/' + id + '/export');
+          if (res.status === 401) { goLogin(); return; }
+          if (!res.ok) { toast('导出失败', 'err'); return; }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const cd = res.headers.get('Content-Disposition') || '';
+          const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+          a.download = m ? decodeURIComponent(m[1]) : ('score_' + id + '.zip');
+          document.body.appendChild(a); a.click(); a.remove();
+          URL.revokeObjectURL(url);
+        } catch (err) { toast('导出失败，请重试', 'err'); }
       });
       item.querySelector('.sc-edit').addEventListener('click', (e) => {
         e.stopPropagation();
-        window.location.href = '/new?edit=' + id;
+        goNew(id);
       });
       item.querySelector('.sc-del').addEventListener('click', async (e) => {
         e.stopPropagation();
         if (!confirm('确定删除《' + s.name + '》？此操作不可撤销')) return;
-        const r = await fetch('/api/scores/' + id, { method: 'DELETE' });
+        const r = await apiFetch('/api/scores/' + id, { method: 'DELETE' });
         if (r.ok) {
           localStorage.removeItem(SCORE_LIST_CACHE_KEY);
           if ('caches' in window) {
@@ -610,7 +658,7 @@
           item.innerHTML = `
             ${checkboxHtml}
             <div class="sc-actions">${actionButtonsHtml(id, false)}</div>
-            ${s.cover_url ? `<div class="score-cover"><img src="${escapeHtml(s.cover_url)}" alt="${escapeHtml(s.name)} 封面" loading="lazy" decoding="async" /></div>` : '<div class="score-cover placeholder">🎼</div>'}
+            ${s.cover_url ? `<div class="score-cover"><img src="${escapeHtml(mediaUrl(s.cover_url))}" alt="${escapeHtml(s.name)} 封面" loading="lazy" decoding="async" /></div>` : '<div class="score-cover placeholder">🎼</div>'}
             <div class="sc-name">${escapeHtml(s.name)}</div>
             <div class="sc-meta">${metaBadgesHtml(s)}</div>
             <div class="sc-time">创建于 ${s.created_at_text}</div>`;
@@ -637,8 +685,8 @@
         renderScores();
       }
       try {
-        const res = await fetch('/api/scores', { cache: 'no-store' });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await apiFetch('/api/scores', { cache: 'no-store' });
+        if (res.status === 401) { goLogin(); return; }
         const data = await res.json();
         writeScoreListCache(data);
         scoreList = data.scores || [];

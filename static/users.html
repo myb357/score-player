@@ -5,6 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>用户管理</title>
   <link rel="stylesheet" href="/assets/style.css" />
+  <script>
+    /* ---- 方案B: offline/web dual-mode runtime ---- */
+    var IS_FILE = location.protocol === 'file:';
+    var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
+    function authToken() { try { return localStorage.getItem('auth_token') || ''; } catch (e) { return ''; } }
+    function apiFetch(path, opts) {
+      opts = opts || {};
+      var url = /^https?:/i.test(path) ? path : (API_BASE + path);
+      var headers = new Headers(opts.headers || {});
+      var t = authToken();
+      if (t) headers.set('Authorization', 'Bearer ' + t);
+      opts.headers = headers;
+      return fetch(url, opts);
+    }
+    function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
+    function goLogin() { location.href = IS_FILE ? 'login.html' : '/login'; }
+    if (IS_FILE) {
+      var _cssLink = document.createElement('link');
+      _cssLink.rel = 'stylesheet'; _cssLink.href = 'style.css';
+      document.head.appendChild(_cssLink);
+    }
+  </script>
   <style>
     .form-grid { display: grid; grid-template-columns: 1fr 1fr 160px auto; gap: 12px; align-items: end; }
     .form-grid .cell label { display:block; font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
@@ -30,7 +52,7 @@
   <div class="topbar">
     <div class="brand"><span class="logo">🎼</span> 用户管理</div>
     <div class="topbar-actions">
-      <a class="btn btn-ghost" href="/">返回主页</a>
+      <a class="btn btn-ghost" href="/" id="backHomeBtn">返回主页</a>
     </div>
   </div>
 
@@ -87,13 +109,13 @@
 
     async function guard() {
       try {
-        const res = await fetch('/api/session');
-        if (res.status === 401) { window.location.href = '/login'; return false; }
+        const res = await apiFetch('/api/session');
+        if (res.status === 401) { goLogin(); return false; }
         const data = await res.json();
-        if (data.role !== 'superadmin') { window.location.href = '/'; return false; }
+        if (data.role !== 'superadmin') { goHome(); return false; }
         return true;
       } catch (e) {
-        window.location.href = '/';
+        goHome();
         return false;
       }
     }
@@ -101,9 +123,9 @@
     async function loadUsers() {
       const list = document.getElementById('usersList');
       try {
-        const res = await fetch('/api/users');
-        if (res.status === 401) { window.location.href = '/login'; return; }
-        if (res.status === 403) { window.location.href = '/'; return; }
+        const res = await apiFetch('/api/users');
+        if (res.status === 401) { goLogin(); return; }
+        if (res.status === 403) { goHome(); return; }
         const data = await res.json();
         const users = data.users || [];
         if (users.length === 0) {
@@ -126,7 +148,7 @@
             const np = prompt('为用户「' + u.username + '」设置新密码（至少 6 位）：');
             if (np === null) return;
             if (np.length < 6) { toast('新密码至少 6 位', 'err'); return; }
-            const r = await fetch('/api/users/' + u.id + '/password', {
+            const r = await apiFetch('/api/users/' + u.id + '/password', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ new_password: np }),
@@ -137,7 +159,7 @@
           });
           row.querySelector('[data-del]').addEventListener('click', async () => {
             if (!confirm('确定删除用户「' + u.username + '」？其名下谱子也会被删除，此操作不可撤销')) return;
-            const r = await fetch('/api/users/' + u.id, { method: 'DELETE' });
+            const r = await apiFetch('/api/users/' + u.id, { method: 'DELETE' });
             const d = await r.json().catch(() => ({}));
             if (r.ok) { toast('已删除', 'ok'); loadUsers(); }
             else toast(d.detail || '删除失败', 'err');
@@ -158,12 +180,12 @@
       const btn = document.getElementById('createBtn');
       btn.disabled = true;
       try {
-        const res = await fetch('/api/users', {
+        const res = await apiFetch('/api/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, password, role }),
         });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (res.status === 401) { goLogin(); return; }
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           toast('用户已创建', 'ok');
@@ -179,6 +201,11 @@
       }
       btn.disabled = false;
     });
+
+    (function () {
+      var b = document.getElementById('backHomeBtn');
+      if (b) b.addEventListener('click', function (e) { e.preventDefault(); goHome(); });
+    })();
 
     (async () => {
       if (await guard()) loadUsers();
