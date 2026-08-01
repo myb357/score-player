@@ -218,3 +218,41 @@ audio.media-preview { background: transparent; }
   .form-actions .btn { flex: 1; justify-content: center; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 }
+
+/* ---------- Image crop modal ---------- */
+.crop-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(5, 6, 12, .78);
+  backdrop-filter: blur(8px);
+}
+.crop-dialog {
+  width: min(960px, 100%);
+  max-height: calc(100vh - 36px);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.crop-head { display: flex; justify-content: space-between; gap: 12px; }
+.crop-stage {
+  min-height: 280px;
+  max-height: 68vh;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #10131f;
+}
+.crop-stage img { display: block; max-width: 100%; max-height: 68vh; }
+.crop-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.cropper-view-box, .cropper-face { border-radius: 4px; }
+
+@media (max-width: 640px) {
+  .crop-dialog { padding: 14px; }
+  .crop-stage { min-height: 220px; }
+  .crop-actions .btn { flex: 1; justify-content: center; }
+}

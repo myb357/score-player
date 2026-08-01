@@ -10,6 +10,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
+from io import BytesIO
 
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, Form
@@ -27,6 +28,7 @@ import psycopg2.extras
 from psycopg2 import pool as pg_pool
 import boto3
 from botocore.config import Config as BotoConfig
+from PIL import Image
 
 # ----------------------------------------------------------------------------
 # Paths & configuration
@@ -673,6 +675,70 @@ async def list_scores(request: Request):
 def _safe_ext(filename: str, allowed: set) -> Optional[str]:
     ext = os.path.splitext(filename or "")[1].lower()
     return ext if ext in allowed else None
+
+
+AUTO_CROP_LIGHTNESS_THRESHOLD = int(os.environ.get("AUTO_CROP_LIGHTNESS_THRESHOLD", "245"))
+AUTO_CROP_ALPHA_THRESHOLD = int(os.environ.get("AUTO_CROP_ALPHA_THRESHOLD", "10"))
+
+
+def detect_light_margin_crop_box(data: bytes) -> dict:
+    """Return a crop box that removes white/light margins from an image.
+
+    The detection treats pixels darker than AUTO_CROP_LIGHTNESS_THRESHOLD as content.
+    Transparent pixels are ignored as background. The returned box uses Pillow/CSS
+    image coordinates: left/top inclusive, right/bottom exclusive.
+    """
+    with Image.open(BytesIO(data)) as img:
+        rgba = img.convert("RGBA")
+        width, height = rgba.size
+        pix = rgba.load()
+        min_x, min_y = width, height
+        max_x, max_y = -1, -1
+        threshold = AUTO_CROP_LIGHTNESS_THRESHOLD
+        alpha_threshold = AUTO_CROP_ALPHA_THRESHOLD
+
+        for y in range(height):
+            for x in range(width):
+                r, g, b, a = pix[x, y]
+                if a <= alpha_threshold:
+                    continue
+                # Perceived brightness; lower means darker/non-margin content.
+                brightness = (r * 299 + g * 587 + b * 114) / 1000
+                if brightness < threshold:
+                    if x < min_x:
+                        min_x = x
+                    if x > max_x:
+                        max_x = x
+                    if y < min_y:
+                        min_y = y
+                    if y > max_y:
+                        max_y = y
+
+        if max_x < min_x or max_y < min_y:
+            return {"left": 0, "top": 0, "right": width, "bottom": height, "width": width, "height": height}
+
+        return {
+            "left": min_x,
+            "top": min_y,
+            "right": max_x + 1,
+            "bottom": max_y + 1,
+            "width": max_x - min_x + 1,
+            "height": max_y - min_y + 1,
+        }
+
+
+@app.post("/api/images/auto-crop")
+async def api_auto_crop_image(image: UploadFile = File(...)):
+    ext = _safe_ext(image.filename, ALLOWED_IMAGE_EXT)
+    if not ext:
+        return JSONResponse(status_code=400, content={"detail": "不支持的图片文件格式"})
+    try:
+        content = await image.read()
+        with Image.open(BytesIO(content)) as img:
+            image_size = {"width": img.width, "height": img.height}
+        return {"ok": True, "box": detect_light_margin_crop_box(content), "image": image_size}
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"图片自动裁剪失败: {e}"})
 
 
 @app.post("/api/scores")
