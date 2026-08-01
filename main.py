@@ -399,8 +399,8 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-PUBLIC_EXACT = {"/login", "/api/login", "/api", "/api/v1/ping", "/favicon.ico"}
-PUBLIC_PREFIX = ("/assets/", "/api/docs", "/api/redoc", "/api/openapi.json")
+PUBLIC_EXACT = {"/login", "/api/login", "/api", "/api/v1/ping", "/favicon.ico", "/sw.js"}
+PUBLIC_PREFIX = ("/assets/", "/static/", "/api/docs", "/api/redoc", "/api/openapi.json")
 
 
 @app.middleware("http")
@@ -467,6 +467,20 @@ async def users_page():
 @app.get("/assets/{filename:path}")
 async def assets(filename: str):
     return serve_static_file(filename)
+
+
+@app.get("/static/{filename:path}")
+async def static_files(filename: str):
+    return serve_static_file(filename)
+
+
+@app.get("/sw.js")
+async def service_worker():
+    return FileResponse(
+        os.path.join(STATIC_DIR, "sw.js"),
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/"},
+    )
 
 
 @app.get("/favicon.ico")
