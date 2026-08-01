@@ -30,6 +30,7 @@
     function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
     function goLogin() { location.href = IS_FILE ? 'login.html' : '/login'; }
     function goUsers() { location.href = IS_FILE ? 'users.html' : '/users'; }
+    function goDownloads() { location.href = IS_FILE ? 'downloads.html' : '/downloads'; }
     function goPlayer(id) { location.href = IS_FILE ? ('player.html?id=' + id) : ('/player/' + id); }
     function goNew(editId) { location.href = (IS_FILE ? 'new.html' : '/new') + (editId ? '?edit=' + editId : ''); }
     if (IS_FILE) {
@@ -37,6 +38,185 @@
       _cssLink.rel = 'stylesheet'; _cssLink.href = 'style.css';
       document.head.appendChild(_cssLink);
     }
+  </script>
+  <script>
+    /* ============================================================
+       离线下载共享模块 (ScoreDB) —— home / player / downloads 三处保持完全一致
+       使用 IndexedDB 存储谱子元数据 + 图片 Blob + 音频 Blob。
+       依赖上方 runtime 中的 apiFetch / mediaUrl。
+       ============================================================ */
+    var ScoreDB = (function () {
+      var DB_NAME = 'score-player-offline';
+      var DB_VERSION = 1;
+      var STORE_META = 'meta';    // keyPath: id  -> {id,name,mode,page_count,has_audio,audio_path,pages[],cover_path,size,downloaded_at}
+      var STORE_BLOBS = 'blobs';  // keyPath: path -> {path,scoreId,type,blob}
+      var _dbPromise = null;
+
+      function open() {
+        if (_dbPromise) return _dbPromise;
+        _dbPromise = new Promise(function (resolve, reject) {
+          if (!('indexedDB' in window)) { reject(new Error('当前环境不支持 IndexedDB')); return; }
+          var req = indexedDB.open(DB_NAME, DB_VERSION);
+          req.onupgradeneeded = function (e) {
+            var db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_META)) {
+              db.createObjectStore(STORE_META, { keyPath: 'id' });
+            }
+            if (!db.objectStoreNames.contains(STORE_BLOBS)) {
+              var s = db.createObjectStore(STORE_BLOBS, { keyPath: 'path' });
+              s.createIndex('scoreId', 'scoreId', { unique: false });
+            }
+          };
+          req.onsuccess = function () { resolve(req.result); };
+          req.onerror = function () { reject(req.error); };
+        });
+        return _dbPromise;
+      }
+
+      function reqPromise(request) {
+        return new Promise(function (resolve, reject) {
+          request.onsuccess = function () { resolve(request.result); };
+          request.onerror = function () { reject(request.error); };
+        });
+      }
+
+      function getMeta(id) {
+        return open().then(function (db) {
+          return reqPromise(db.transaction(STORE_META, 'readonly').objectStore(STORE_META).get(Number(id)));
+        });
+      }
+
+      function getAllMeta() {
+        return open().then(function (db) {
+          return reqPromise(db.transaction(STORE_META, 'readonly').objectStore(STORE_META).getAll());
+        }).then(function (list) { return list || []; });
+      }
+
+      function getDownloadedIds() {
+        return getAllMeta().then(function (list) {
+          return list.map(function (m) { return Number(m.id); });
+        });
+      }
+
+      function isDownloaded(id) {
+        return getMeta(id).then(function (m) { return !!m; }).catch(function () { return false; });
+      }
+
+      function getBlob(path) {
+        return open().then(function (db) {
+          return reqPromise(db.transaction(STORE_BLOBS, 'readonly').objectStore(STORE_BLOBS).get(path));
+        }).then(function (rec) { return rec ? rec.blob : null; });
+      }
+
+      function localAssetUrl(path) {
+        if (!path) return Promise.resolve(null);
+        return getBlob(path).then(function (blob) { return blob ? URL.createObjectURL(blob) : null; }).catch(function () { return null; });
+      }
+
+      function saveScore(meta, blobs) {
+        return open().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var t = db.transaction([STORE_META, STORE_BLOBS], 'readwrite');
+            t.oncomplete = function () { resolve(true); };
+            t.onerror = function () { reject(t.error); };
+            t.onabort = function () { reject(t.error); };
+            t.objectStore(STORE_META).put(meta);
+            var bs = t.objectStore(STORE_BLOBS);
+            (blobs || []).forEach(function (b) { bs.put(b); });
+          });
+        });
+      }
+
+      function deleteScore(id) {
+        id = Number(id);
+        return open().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var t = db.transaction([STORE_META, STORE_BLOBS], 'readwrite');
+            t.oncomplete = function () { resolve(true); };
+            t.onerror = function () { reject(t.error); };
+            t.onabort = function () { reject(t.error); };
+            t.objectStore(STORE_META).delete(id);
+            var curReq = t.objectStore(STORE_BLOBS).index('scoreId').openCursor(IDBKeyRange.only(id));
+            curReq.onsuccess = function (e) {
+              var cursor = e.target.result;
+              if (cursor) { cursor.delete(); cursor.continue(); }
+            };
+          });
+        });
+      }
+
+      // 下载单个谱子的全部资源到 IndexedDB。onProgress(done,total) 可选。
+      function downloadScore(id, onProgress) {
+        id = Number(id);
+        return apiFetch('/api/scores/' + id, { cache: 'no-store' }).then(function (res) {
+          if (res.status === 401) throw new Error('登录已失效');
+          if (!res.ok) throw new Error('获取谱子信息失败');
+          return res.json();
+        }).then(function (detail) {
+          var pages = detail.pages || [];
+          var total = pages.length + (detail.audio_url ? 1 : 0);
+          var done = 0;
+          var blobs = [];
+          var tasks = [];
+          function tick() { done++; if (typeof onProgress === 'function') onProgress(done, total); }
+          function fetchBlob(url) {
+            return fetch(mediaUrl(url), { cache: 'no-store' }).then(function (r) {
+              if (!r.ok) throw new Error('资源下载失败: ' + url);
+              return r.blob();
+            });
+          }
+          pages.forEach(function (p) {
+            tasks.push(fetchBlob(p.image_url).then(function (blob) {
+              blobs.push({ path: p.image_url, scoreId: id, type: 'image', blob: blob });
+              tick();
+            }));
+          });
+          if (detail.audio_url) {
+            tasks.push(fetchBlob(detail.audio_url).then(function (blob) {
+              blobs.push({ path: detail.audio_url, scoreId: id, type: 'audio', blob: blob });
+              tick();
+            }));
+          }
+          return Promise.all(tasks).then(function () {
+            var size = blobs.reduce(function (acc, b) { return acc + (b.blob ? b.blob.size : 0); }, 0);
+            var meta = {
+              id: id,
+              name: detail.name,
+              mode: detail.mode,
+              page_count: pages.length,
+              has_audio: !!detail.audio_url,
+              audio_path: detail.audio_url || '',
+              pages: pages.map(function (p) { return { index: p.index, image_path: p.image_url, turn_seconds: p.turn_seconds }; }),
+              cover_path: pages.length ? pages[0].image_url : '',
+              size: size,
+              downloaded_at: Date.now()
+            };
+            return saveScore(meta, blobs).then(function () { return meta; });
+          });
+        });
+      }
+
+      function formatSize(bytes) {
+        bytes = bytes || 0;
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+      }
+
+      return {
+        open: open,
+        getMeta: getMeta,
+        getAllMeta: getAllMeta,
+        getDownloadedIds: getDownloadedIds,
+        isDownloaded: isDownloaded,
+        getBlob: getBlob,
+        localAssetUrl: localAssetUrl,
+        saveScore: saveScore,
+        deleteScore: deleteScore,
+        downloadScore: downloadScore,
+        formatSize: formatSize
+      };
+    })();
   </script>
   <style>
     .modal-overlay { position: fixed; inset: 0; background: rgba(5,6,12,.66); backdrop-filter: blur(4px); z-index: 200; display: grid; place-items: center; padding: 20px; }
@@ -50,6 +230,10 @@
     /* neutralize the standalone absolute positioning of .sc-del from style.css so buttons sit side by side */
     .score-card .sc-actions .sc-del { position: static; top: auto; right: auto; opacity: 1; }
     .score-row .sc-actions { position: static; transform: none; }
+    /* 离线下载相关 */
+    .sc-download.is-downloaded { color: var(--accent-2); border-color: rgba(34,211,238,.4); }
+    .badge.dl-badge { color: #34d399; border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
+    .badge.dl-badge::before { content: '⤓'; margin-right: 4px; font-weight: 800; }
   </style>
 </head>
 <body>
@@ -63,6 +247,7 @@
         <button class="btn btn-ghost btn-icon settings-toggle" id="settingsBtn" type="button" aria-label="设置" aria-haspopup="true" aria-expanded="false">⚙</button>
         <div class="settings-dropdown" id="settingsDropdown" role="menu">
           <a class="settings-item" href="/users" id="usersBtn" role="menuitem" style="display:none;">用户管理</a>
+          <a class="settings-item" href="/downloads" id="myDownloadsBtn" role="menuitem">我的下载</a>
           <a class="settings-item" href="/download/android" id="downloadAndroidBtn" role="menuitem">下载 Android App</a>
           <button class="settings-item" id="clearCacheBtn" type="button" role="menuitem">清除缓存</button>
           <button class="settings-item" id="checkUpdateBtn" type="button" role="menuitem">检查更新</button>
@@ -108,7 +293,7 @@
         <div><strong>App 名称：</strong>谱子播放器</div>
       </div>
       <div class="form-row">
-        <div><strong>当前版本：</strong>v<span id="aboutVersion">1.0.9</span></div>
+        <div><strong>当前版本：</strong>v<span id="aboutVersion">1.1.0</span></div>
       </div>
       <div class="form-row">
         <div><strong>说明：</strong>用于管理、导入和播放曲谱，支持 Android App 与网页端使用。</div>
@@ -139,7 +324,7 @@
       setTimeout(() => t.remove(), 2600);
     }
 
-    const CURRENT_APP_VERSION = '1.0.9';
+    const CURRENT_APP_VERSION = '1.1.0';
     function compareVersions(remote, current) {
       const remoteParts = String(remote || '').split('.');
       const currentParts = String(current || '').split('.');
@@ -300,6 +485,7 @@
     // Navigation bindings that must work under file:// (offline app) as well as web.
     document.getElementById('newScoreBtn').addEventListener('click', (e) => { e.preventDefault(); goNew(); });
     document.getElementById('usersBtn').addEventListener('click', (e) => { e.preventDefault(); closeSettingsMenu(); goUsers(); });
+    document.getElementById('myDownloadsBtn').addEventListener('click', (e) => { e.preventDefault(); closeSettingsMenu(); goDownloads(); });
     document.getElementById('downloadAndroidBtn').addEventListener('click', (e) => {
       e.preventDefault(); closeSettingsMenu();
       window.location.href = API_BASE + '/download/android';
@@ -378,6 +564,15 @@
     const SCORE_VIEW_MODE_KEY = 'score-player:home-view-mode';
     let scoreList = [];
     let batchMode = false;
+    const downloadedIds = new Set();
+
+    async function refreshDownloadedIds() {
+      try {
+        const ids = await ScoreDB.getDownloadedIds();
+        downloadedIds.clear();
+        ids.forEach(id => downloadedIds.add(Number(id)));
+      } catch (e) { /* IndexedDB 不可用则忽略离线标识 */ }
+    }
     let viewMode = localStorage.getItem(SCORE_VIEW_MODE_KEY) === 'card' ? 'card' : 'list';
     const selectedScores = new Set();
     const viewToggle = document.getElementById('viewToggle');
@@ -499,6 +694,7 @@
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           toast('已删除 ' + (data.deleted || ids.length) + ' 个谱子', 'ok');
+          for (const delId of ids) { try { await ScoreDB.deleteScore(delId); downloadedIds.delete(Number(delId)); } catch (e) { /* ignore */ } }
           selectedScores.clear();
           await load();
         } else {
@@ -513,8 +709,10 @@
     });
 
     function actionButtonsHtml(id, includePlay) {
+      const dl = downloadedIds.has(Number(id));
       return `
         ${includePlay ? `<button class="btn btn-sm sc-play" data-id="${id}">播放</button>` : ''}
+        <button class="btn btn-sm sc-download${dl ? ' is-downloaded' : ''}" data-id="${id}">${dl ? '✓ 已下载' : '⤓ 下载'}</button>
         <button class="btn btn-sm sc-export" data-id="${id}">导出</button>
         <button class="btn btn-sm sc-edit" data-id="${id}">编辑</button>
         <button class="btn btn-danger btn-sm sc-del" data-id="${id}">删除</button>`;
@@ -523,11 +721,13 @@
     function metaBadgesHtml(s) {
       const ownerHtml = (currentRole === 'superadmin' && s.owner)
         ? `<span class="badge sc-owner-badge">创建者：${escapeHtml(s.owner)}</span>` : '';
+      const dlHtml = downloadedIds.has(Number(s.id)) ? '<span class="badge dl-badge">已下载</span>' : '';
       return `
         ${ownerHtml}
         <span class="badge accent">${modeLabel(s.mode)}</span>
         <span class="badge">${s.page_count} 页</span>
-        ${s.has_audio ? '<span class="badge">含伴奏</span>' : ''}`;
+        ${s.has_audio ? '<span class="badge">含伴奏</span>' : ''}
+        ${dlHtml}`;
     }
 
     function bindScoreItemActions(item, s) {
@@ -555,6 +755,30 @@
           e.stopPropagation();
           saveHomeState();
           goPlayer(id);
+        });
+      }
+      const dlBtn = item.querySelector('.sc-download');
+      if (dlBtn) {
+        dlBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (downloadedIds.has(id)) {
+            if (!confirm('《' + s.name + '》已下载，是否重新下载？')) return;
+          }
+          const originalText = dlBtn.textContent;
+          dlBtn.disabled = true;
+          dlBtn.textContent = '下载中…';
+          try {
+            await ScoreDB.downloadScore(id, (done, total) => {
+              dlBtn.textContent = '下载中… ' + done + '/' + total;
+            });
+            downloadedIds.add(id);
+            toast('《' + s.name + '》已下载，可离线播放', 'ok');
+            renderScores();
+          } catch (err) {
+            dlBtn.disabled = false;
+            dlBtn.textContent = originalText;
+            toast('下载失败：' + (err && err.message ? err.message : '请重试'), 'err');
+          }
         });
       }
       item.querySelector('.sc-export').addEventListener('click', async (e) => {
@@ -589,6 +813,7 @@
             await cache.delete('/api/scores/' + id);
           }
           localStorage.removeItem('score-player:score-detail:' + id);
+          try { await ScoreDB.deleteScore(id); downloadedIds.delete(id); } catch (e) { /* ignore */ }
           toast('已删除', 'ok');
           load({ skipCache: true });
         } else {
@@ -684,6 +909,7 @@
     async function load(options) {
       const content = document.getElementById('content');
       const opts = options || {};
+      await refreshDownloadedIds();
       const cached = opts.skipCache ? null : readScoreListCache();
       if (!cached) renderSkeleton();
       if (cached) {

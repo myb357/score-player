@@ -37,6 +37,185 @@
       document.head.appendChild(_cssLink);
     }
   </script>
+  <script>
+    /* ============================================================
+       离线下载共享模块 (ScoreDB) —— home / player / downloads 三处保持完全一致
+       使用 IndexedDB 存储谱子元数据 + 图片 Blob + 音频 Blob。
+       依赖上方 runtime 中的 apiFetch / mediaUrl。
+       ============================================================ */
+    var ScoreDB = (function () {
+      var DB_NAME = 'score-player-offline';
+      var DB_VERSION = 1;
+      var STORE_META = 'meta';    // keyPath: id  -> {id,name,mode,page_count,has_audio,audio_path,pages[],cover_path,size,downloaded_at}
+      var STORE_BLOBS = 'blobs';  // keyPath: path -> {path,scoreId,type,blob}
+      var _dbPromise = null;
+
+      function open() {
+        if (_dbPromise) return _dbPromise;
+        _dbPromise = new Promise(function (resolve, reject) {
+          if (!('indexedDB' in window)) { reject(new Error('当前环境不支持 IndexedDB')); return; }
+          var req = indexedDB.open(DB_NAME, DB_VERSION);
+          req.onupgradeneeded = function (e) {
+            var db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_META)) {
+              db.createObjectStore(STORE_META, { keyPath: 'id' });
+            }
+            if (!db.objectStoreNames.contains(STORE_BLOBS)) {
+              var s = db.createObjectStore(STORE_BLOBS, { keyPath: 'path' });
+              s.createIndex('scoreId', 'scoreId', { unique: false });
+            }
+          };
+          req.onsuccess = function () { resolve(req.result); };
+          req.onerror = function () { reject(req.error); };
+        });
+        return _dbPromise;
+      }
+
+      function reqPromise(request) {
+        return new Promise(function (resolve, reject) {
+          request.onsuccess = function () { resolve(request.result); };
+          request.onerror = function () { reject(request.error); };
+        });
+      }
+
+      function getMeta(id) {
+        return open().then(function (db) {
+          return reqPromise(db.transaction(STORE_META, 'readonly').objectStore(STORE_META).get(Number(id)));
+        });
+      }
+
+      function getAllMeta() {
+        return open().then(function (db) {
+          return reqPromise(db.transaction(STORE_META, 'readonly').objectStore(STORE_META).getAll());
+        }).then(function (list) { return list || []; });
+      }
+
+      function getDownloadedIds() {
+        return getAllMeta().then(function (list) {
+          return list.map(function (m) { return Number(m.id); });
+        });
+      }
+
+      function isDownloaded(id) {
+        return getMeta(id).then(function (m) { return !!m; }).catch(function () { return false; });
+      }
+
+      function getBlob(path) {
+        return open().then(function (db) {
+          return reqPromise(db.transaction(STORE_BLOBS, 'readonly').objectStore(STORE_BLOBS).get(path));
+        }).then(function (rec) { return rec ? rec.blob : null; });
+      }
+
+      function localAssetUrl(path) {
+        if (!path) return Promise.resolve(null);
+        return getBlob(path).then(function (blob) { return blob ? URL.createObjectURL(blob) : null; }).catch(function () { return null; });
+      }
+
+      function saveScore(meta, blobs) {
+        return open().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var t = db.transaction([STORE_META, STORE_BLOBS], 'readwrite');
+            t.oncomplete = function () { resolve(true); };
+            t.onerror = function () { reject(t.error); };
+            t.onabort = function () { reject(t.error); };
+            t.objectStore(STORE_META).put(meta);
+            var bs = t.objectStore(STORE_BLOBS);
+            (blobs || []).forEach(function (b) { bs.put(b); });
+          });
+        });
+      }
+
+      function deleteScore(id) {
+        id = Number(id);
+        return open().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var t = db.transaction([STORE_META, STORE_BLOBS], 'readwrite');
+            t.oncomplete = function () { resolve(true); };
+            t.onerror = function () { reject(t.error); };
+            t.onabort = function () { reject(t.error); };
+            t.objectStore(STORE_META).delete(id);
+            var curReq = t.objectStore(STORE_BLOBS).index('scoreId').openCursor(IDBKeyRange.only(id));
+            curReq.onsuccess = function (e) {
+              var cursor = e.target.result;
+              if (cursor) { cursor.delete(); cursor.continue(); }
+            };
+          });
+        });
+      }
+
+      // 下载单个谱子的全部资源到 IndexedDB。onProgress(done,total) 可选。
+      function downloadScore(id, onProgress) {
+        id = Number(id);
+        return apiFetch('/api/scores/' + id, { cache: 'no-store' }).then(function (res) {
+          if (res.status === 401) throw new Error('登录已失效');
+          if (!res.ok) throw new Error('获取谱子信息失败');
+          return res.json();
+        }).then(function (detail) {
+          var pages = detail.pages || [];
+          var total = pages.length + (detail.audio_url ? 1 : 0);
+          var done = 0;
+          var blobs = [];
+          var tasks = [];
+          function tick() { done++; if (typeof onProgress === 'function') onProgress(done, total); }
+          function fetchBlob(url) {
+            return fetch(mediaUrl(url), { cache: 'no-store' }).then(function (r) {
+              if (!r.ok) throw new Error('资源下载失败: ' + url);
+              return r.blob();
+            });
+          }
+          pages.forEach(function (p) {
+            tasks.push(fetchBlob(p.image_url).then(function (blob) {
+              blobs.push({ path: p.image_url, scoreId: id, type: 'image', blob: blob });
+              tick();
+            }));
+          });
+          if (detail.audio_url) {
+            tasks.push(fetchBlob(detail.audio_url).then(function (blob) {
+              blobs.push({ path: detail.audio_url, scoreId: id, type: 'audio', blob: blob });
+              tick();
+            }));
+          }
+          return Promise.all(tasks).then(function () {
+            var size = blobs.reduce(function (acc, b) { return acc + (b.blob ? b.blob.size : 0); }, 0);
+            var meta = {
+              id: id,
+              name: detail.name,
+              mode: detail.mode,
+              page_count: pages.length,
+              has_audio: !!detail.audio_url,
+              audio_path: detail.audio_url || '',
+              pages: pages.map(function (p) { return { index: p.index, image_path: p.image_url, turn_seconds: p.turn_seconds }; }),
+              cover_path: pages.length ? pages[0].image_url : '',
+              size: size,
+              downloaded_at: Date.now()
+            };
+            return saveScore(meta, blobs).then(function () { return meta; });
+          });
+        });
+      }
+
+      function formatSize(bytes) {
+        bytes = bytes || 0;
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+      }
+
+      return {
+        open: open,
+        getMeta: getMeta,
+        getAllMeta: getAllMeta,
+        getDownloadedIds: getDownloadedIds,
+        isDownloaded: isDownloaded,
+        getBlob: getBlob,
+        localAssetUrl: localAssetUrl,
+        saveScore: saveScore,
+        deleteScore: deleteScore,
+        downloadScore: downloadScore,
+        formatSize: formatSize
+      };
+    })();
+  </script>
   <style>
     #pageImg { will-change: transform; transform-origin: center center; touch-action: none; }
     .stage { touch-action: none; cursor: grab; }
@@ -138,12 +317,16 @@
       catch(e){/* ignore quota/private mode errors */}
     }
     async function openAssetCache(){return 'caches' in window?caches.open(SCORE_CACHE_NAME):null;}
-    async function cachedAssetUrl(url){
+    async function cachedAssetUrl(url, path){
       if(!url)return '';
+      // 1) 优先离线下载 (IndexedDB) —— 断网时仍可用
+      if(path){
+        try{ const local=await ScoreDB.localAssetUrl(path); if(local) return local; }catch(e){/* fall through */}
+      }
+      // 2) Service Worker Cache API
       const cache=await openAssetCache();
-      if(!cache)return url;
-      const cached=await cache.match(url);
-      if(cached)return URL.createObjectURL(await cached.blob());
+      if(cache){ const cached=await cache.match(url); if(cached)return URL.createObjectURL(await cached.blob()); }
+      // 3) 网络原始地址
       return url;
     }
     async function refreshAsset(url){
@@ -170,13 +353,14 @@
     let controlsBound=false;
     async function applyScore(data){
       // Normalize media URLs to absolute so they load under file:// (offline app).
-      (data.pages||[]).forEach(p=>{ if(p&&p.image_url) p.image_url=mediaUrl(p.image_url); });
-      if(data.audio_url) data.audio_url=mediaUrl(data.audio_url);
+      // Keep the original /api/media path for IndexedDB (offline download) lookup.
+      (data.pages||[]).forEach(p=>{ if(p&&p.image_url){ if(!p.image_path)p.image_path=p.image_url; p.image_url=mediaUrl(p.image_url); } });
+      if(data.audio_url){ if(!data.audio_path)data.audio_path=data.audio_url; data.audio_url=mediaUrl(data.audio_url); }
       score=data; pages=score.pages||[]; mode=score.mode; $('title').textContent=score.name;
       flipAway=pages.map(p=>p.turn_seconds||0);
-      await Promise.all(pages.map(async p=>{p.cached_image_url=await cachedAssetUrl(p.image_url);}));
+      await Promise.all(pages.map(async p=>{p.cached_image_url=await cachedAssetUrl(p.image_url, p.image_path);}));
       if(hasAudio()){
-        audio.src=await cachedAssetUrl(score.audio_url);
+        audio.src=await cachedAssetUrl(score.audio_url, score.audio_path);
         audio.onloadedmetadata=()=>{$('durTime').textContent=fmt(audio.duration);};
         audio.ontimeupdate=onTimeUpdate;
         audio.onended=()=>{playing=false;updatePlayBtn();showBars();};
@@ -206,22 +390,41 @@
       toast(viewMode==='scroll'?'已切换为滚动模式':'已切换为适应屏幕','ok');
     }
 
+    function metaToScore(meta){
+      return {
+        id: meta.id,
+        name: meta.name,
+        mode: meta.mode,
+        audio_url: meta.audio_path || null,
+        audio_path: meta.audio_path || null,
+        pages: (meta.pages||[]).map(p=>({ index:p.index, image_url:p.image_path, image_path:p.image_path, turn_seconds:p.turn_seconds }))
+      };
+    }
+
     async function init(){
+      let hasLocal=false;
       const cached=readCachedScore();
       if(cached&&cached.score){
         await applyScore(cached.score);
+        hasLocal=true;
+      }else{
+        // 无 localStorage 详情缓存时，尝试从离线下载 (IndexedDB) 直接构建
+        try{
+          const meta=await ScoreDB.getMeta(scoreId);
+          if(meta){ await applyScore(metaToScore(meta)); hasLocal=true; }
+        }catch(e){/* ignore */}
       }
       try{
         const res=await apiFetch('/api/scores/'+scoreId,{cache:'no-store'});
         if(res.status===401){goLogin();return;}
-        if(!res.ok){toast('谱子不存在','err');setTimeout(()=>goHome(),1200);return;}
+        if(!res.ok){ if(!hasLocal){toast('谱子不存在','err');setTimeout(()=>goHome(),1200);} return; }
         const fresh=await res.json();
         writeCachedScore(fresh);
         await cacheScoreAssets(fresh);
         await applyScore(fresh);
       }catch(e){
-        if(!cached)toast('加载失败','err');
-        else toast('已使用本地缓存，后台更新失败','err');
+        if(!hasLocal)toast('加载失败','err');
+        else toast('已离线加载本地下载内容','ok');
       }
     }
 
