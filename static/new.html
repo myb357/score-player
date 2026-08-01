@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>新建谱子</title>
   <link rel="stylesheet" href="/assets/style.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css" />
 </head>
 <body>
   <div class="topbar">
@@ -114,6 +115,24 @@
 
   <div class="toast-wrap" id="toasts"></div>
 
+  <div class="crop-modal" id="cropModal" style="display:none;">
+    <div class="crop-dialog panel">
+      <div class="crop-head">
+        <div>
+          <div class="section-title" id="cropTitle">裁剪谱页图片</div>
+          <div class="hint">已根据图片亮度自动去除白色/浅色边距，可拖拽裁剪框微调后确认。</div>
+        </div>
+      </div>
+      <div class="crop-stage"><img id="cropImage" alt="裁剪预览" /></div>
+      <div class="crop-actions">
+        <button class="btn btn-ghost" id="cropResetBtn" type="button">恢复自动裁剪</button>
+        <button class="btn btn-danger" id="cropSkipBtn" type="button">跳过此图</button>
+        <button class="btn btn-primary" id="cropConfirmBtn" type="button">确认裁剪</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
   <script>
     // ---------- edit mode detection ----------
     const editId = new URLSearchParams(location.search).get('edit');
@@ -162,17 +181,101 @@
     const pagesList = document.getElementById('pagesList');
 
     imgDrop.addEventListener('click', () => imgInput.click());
-    imgInput.addEventListener('change', () => { addImages(imgInput.files); imgInput.value=''; });
+    imgInput.addEventListener('change', async () => { await addImages(imgInput.files); imgInput.value=''; });
     ['dragover','dragenter'].forEach(ev => imgDrop.addEventListener(ev, e => { e.preventDefault(); imgDrop.classList.add('drag'); }));
     ['dragleave','drop'].forEach(ev => imgDrop.addEventListener(ev, e => { e.preventDefault(); imgDrop.classList.remove('drag'); }));
-    imgDrop.addEventListener('drop', e => { addImages(e.dataTransfer.files); });
+    imgDrop.addEventListener('drop', async e => { await addImages(e.dataTransfer.files); });
 
-    function addImages(fileList) {
-      for (const f of fileList) {
-        if (!f.type.startsWith('image/')) continue;
-        pages.push({ id: ++uid, turn: '', kind: 'new', file: f, url: URL.createObjectURL(f), name: f.name });
+    async function addImages(fileList) {
+      const imageFiles = Array.from(fileList).filter(f => f.type.startsWith('image/'));
+      for (const f of imageFiles) {
+        try {
+          const cropped = await cropImageBeforeAdd(f);
+          if (!cropped) continue;
+          pages.push({ id: ++uid, turn: '', kind: 'new', file: cropped.file, url: URL.createObjectURL(cropped.file), name: cropped.file.name });
+          renderPages();
+        } catch (e) {
+          toast('图片裁剪失败：' + (e.message || f.name), 'err');
+        }
       }
-      renderPages();
+    }
+
+    function outputTypeFor(file) {
+      return file.type === 'image/png' || file.type === 'image/webp' || file.type === 'image/jpeg' ? file.type : 'image/png';
+    }
+
+    function croppedFileName(name, type) {
+      const ext = type === 'image/jpeg' ? 'jpg' : (type === 'image/webp' ? 'webp' : 'png');
+      const base = (name || 'page').replace(/\.[^.]+$/, '');
+      return base + '_cropped.' + ext;
+    }
+
+    async function requestAutoCropBox(file) {
+      const fd = new FormData();
+      fd.append('image', file, file.name);
+      const res = await fetch('/api/images/auto-crop', { method: 'POST', body: fd });
+      if (res.status === 401) { window.location.href = '/login'; return null; }
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '自动裁剪接口异常');
+      return res.json();
+    }
+
+    async function cropImageBeforeAdd(file) {
+      const auto = await requestAutoCropBox(file);
+      if (!auto) return null;
+      return showCropDialog(file, auto.box);
+    }
+
+    function showCropDialog(file, box) {
+      return new Promise((resolve, reject) => {
+        const modal = document.getElementById('cropModal');
+        const img = document.getElementById('cropImage');
+        const title = document.getElementById('cropTitle');
+        const resetBtn = document.getElementById('cropResetBtn');
+        const skipBtn = document.getElementById('cropSkipBtn');
+        const confirmBtn = document.getElementById('cropConfirmBtn');
+        let cropper = null;
+        const url = URL.createObjectURL(file);
+        const data = { x: box.left, y: box.top, width: box.width, height: box.height };
+
+        function cleanup(result) {
+          if (cropper) cropper.destroy();
+          cropper = null;
+          img.removeAttribute('src');
+          modal.style.display = 'none';
+          URL.revokeObjectURL(url);
+          resetBtn.onclick = skipBtn.onclick = confirmBtn.onclick = null;
+          resolve(result);
+        }
+
+        title.textContent = '裁剪谱页图片：' + file.name;
+        img.onload = () => {
+          cropper = new Cropper(img, {
+            viewMode: 1,
+            autoCrop: true,
+            autoCropArea: 1,
+            background: false,
+            responsive: true,
+            ready() { cropper.setData(data); }
+          });
+        };
+        img.onerror = () => reject(new Error('图片加载失败'));
+        img.src = url;
+        modal.style.display = 'flex';
+
+        resetBtn.onclick = () => { if (cropper) cropper.setData(data); };
+        skipBtn.onclick = () => cleanup(null);
+        confirmBtn.onclick = () => {
+          if (!cropper) return;
+          confirmBtn.disabled = true;
+          cropper.getCroppedCanvas({ imageSmoothingEnabled: true, imageSmoothingQuality: 'high' }).toBlob(blob => {
+            confirmBtn.disabled = false;
+            if (!blob) { toast('裁剪输出失败', 'err'); return; }
+            const type = outputTypeFor(file);
+            const cropped = new File([blob], croppedFileName(file.name, type), { type, lastModified: Date.now() });
+            cleanup({ file: cropped });
+          }, outputTypeFor(file), 0.92);
+        };
+      });
     }
 
     function updateTurnLabels() {
