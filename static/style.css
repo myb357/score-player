@@ -140,7 +140,7 @@ input[type="number"] { -moz-appearance: textfield; }
 .view-btn:hover { color: var(--text); background: rgba(255,255,255,.05); }
 .view-btn.active { color: #fff; background: linear-gradient(135deg, var(--accent), #5b7cff); box-shadow: 0 8px 18px rgba(124,92,255,.28); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 18px; }
-.score-card { min-height: 154px; padding: 24px 20px 18px; cursor: pointer; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, background .18s ease; position: relative; overflow: hidden; border-radius: 20px; }
+.score-card { min-height: 154px; padding: 24px 20px 72px; cursor: pointer; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, background .18s ease; position: relative; overflow: hidden; border-radius: 20px; }
 .score-card::before { content:""; position:absolute; inset:0; background: linear-gradient(135deg, rgba(124,92,255,.14), rgba(34,211,238,.05) 42%, transparent 70%); opacity: 0; transition: .18s; }
 .score-card:hover { transform: translateY(-3px); border-color: #465184; box-shadow: 0 16px 38px rgba(0,0,0,.42); }
 .score-card:hover::before { opacity: 1; }
@@ -295,9 +295,9 @@ audio.media-preview { background: transparent; }
   .form-actions { justify-content: stretch; }
   .form-actions .btn { flex: 1; justify-content: center; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
-  .score-card { min-height: 144px; padding: 20px 16px 16px; }
+  .score-card { min-height: 144px; padding: 20px 16px 66px; }
   .score-card .sc-name { padding-right: 0; font-size: 17px; }
-  .score-card .sc-actions { position: static; opacity: 1; margin-bottom: 12px; flex-wrap: wrap; }
+  .score-card .sc-actions { left: 16px; right: 16px; bottom: 16px; opacity: 1; transform: none; flex-wrap: wrap; }
   .score-row { align-items: flex-start; flex-direction: column; gap: 12px; padding: 16px; }
   .score-list.batch-mode .score-row { padding-left: 54px; }
   .sr-side { width: 100%; align-items: flex-start; flex-direction: column; gap: 10px; }
