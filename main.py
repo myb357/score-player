@@ -539,7 +539,7 @@ async def download_android_app():
         ANDROID_APK_PATH,
         media_type="application/vnd.android.package-archive",
         filename="score-player.apk",
-        content_disposition_type="attachment",
+        headers={"Content-Disposition": 'attachment; filename="score-player.apk"'},
     )
 
 
