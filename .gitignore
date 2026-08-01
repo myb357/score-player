@@ -4,3 +4,4 @@ __pycache__/
 .env
 /data
 score_app_data/
+score-player-source.zip
