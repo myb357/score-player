@@ -5,72 +5,62 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <title>播放</title>
   <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    #pageImg { will-change: transform; transform-origin: center center; touch-action: none; }
+    .stage { touch-action: none; cursor: grab; }
+    .stage.grabbing { cursor: grabbing; }
+    .player-root.pseudo-fs { position: fixed; inset: 0; z-index: 9999; width:100vw; height:100vh; }
+  </style>
 </head>
 <body>
   <div class="player-root" id="root">
-    <!-- top bar -->
-    <div class="player-top" id="topBar">
-      <a class="btn btn-ghost btn-sm" href="/">‹ 返回</a>
-      <div class="pt-title" id="title">加载中…</div>
-      <button class="btn btn-ghost btn-sm" id="fsBtn">⛶ 全屏</button>
-    </div>
+    <div class="player-body">
+      <!-- LEFT: navigation -->
+      <div class="side-bar left" id="leftBar">
+        <a class="round-btn" href="/" title="返回">‹</a>
+        <div class="bar-title" id="title">加载中</div>
+        <div class="bar-spacer"></div>
+        <button class="round-btn" id="prevBtn" title="上一页">⏮</button>
+        <div class="page-ind-v" id="pageInd">1/1</div>
+        <button class="round-btn" id="nextBtn" title="下一页">⏭</button>
+        <div class="bar-spacer"></div>
+        <button class="round-btn" id="zoomReset" title="还原大小">⤢</button>
+        <button class="round-btn" id="fsBtn" title="全屏">⛶</button>
+      </div>
 
-    <!-- stage -->
-    <div class="stage" id="stage">
-      <div class="page-nav-zone left" id="navLeft"></div>
-      <div class="page-nav-zone right" id="navRight"></div>
-      <div class="page-counter left" id="cntLeft">‹</div>
-      <img id="pageImg" alt="谱页" />
-      <div class="page-counter right" id="cntRight">›</div>
-    </div>
+      <!-- STAGE -->
+      <div class="stage" id="stage">
+        <img id="pageImg" alt="谱页" />
+      </div>
 
-    <!-- controls -->
-    <div class="controls" id="controls">
-      <div class="controls-inner">
-        <!-- progress (audio only) -->
-        <div class="progress-wrap" id="progressWrap">
-          <div class="progress-bar" id="progressBar">
-            <div class="progress-ab" id="abFill" style="display:none;"></div>
-            <div class="progress-played" id="played"></div>
-            <div class="progress-marker a" id="markerA" data-l="A" style="display:none;"></div>
-            <div class="progress-marker b" id="markerB" data-l="B" style="display:none;"></div>
+      <!-- RIGHT: playback -->
+      <div class="side-bar right" id="rightBar">
+        <button class="play-btn" id="playBtn" title="播放/暂停">▶</button>
+        <div class="vprogress-wrap" id="progressWrap">
+          <span class="vtime" id="durTime">0:00</span>
+          <div class="vprogress" id="progressBar">
+            <div class="vprogress-ab" id="abFill" style="display:none;"></div>
+            <div class="vprogress-played" id="played"></div>
+            <div class="vmarker" id="markerA" style="display:none;"></div>
+            <div class="vmarker" id="markerB" style="display:none;"></div>
           </div>
-          <div class="time-row">
-            <span id="curTime">0:00</span>
-            <span id="durTime">0:00</span>
-          </div>
+          <span class="vtime" id="curTime">0:00</span>
         </div>
-
-        <div class="ctrl-row">
-          <button class="round-btn" id="prevBtn" title="上一页">⏮</button>
-          <button class="play-btn" id="playBtn" title="播放/暂停">▶</button>
-          <button class="round-btn" id="nextBtn" title="下一页">⏭</button>
-
-          <div class="group">
-            <span style="font-size:13px; color:var(--muted)">页码</span>
-            <b id="pageInd" style="color:var(--accent-2)">1 / 1</b>
-          </div>
-
-          <div class="group speed-group" id="speedGroup">
-            <button class="round-btn btn-sm" id="speedDown" style="width:32px;height:32px;font-size:16px;">−</button>
-            <label>速度</label>
-            <input type="range" id="speedRange" min="0.1" max="2.0" step="0.1" value="1.0" />
-            <span class="speed-val" id="speedVal">1.0x</span>
-            <button class="round-btn btn-sm" id="speedUp" style="width:32px;height:32px;font-size:16px;">＋</button>
-          </div>
-
-          <div class="group" id="abGroup">
-            <span style="font-size:13px; color:var(--muted)">循环</span>
-            <button class="round-btn" id="setA" title="设起点A" style="font-size:14px;">A</button>
-            <button class="round-btn" id="setB" title="设终点B" style="font-size:14px;">B</button>
-            <button class="round-btn" id="clearAB" title="取消循环" style="font-size:14px;">✕</button>
-          </div>
-
-          <div class="countdown-pill" id="cdPill" style="display:none;">倒计时 —</div>
+        <div class="speed-v" id="speedGroup">
+          <button class="round-btn sm" id="speedUp">＋</button>
+          <span class="speed-val" id="speedVal">1.0x</span>
+          <span class="lbl">倍速</span>
+          <button class="round-btn sm" id="speedDown">−</button>
         </div>
+        <div class="ab-v" id="abGroup">
+          <span class="lbl">循环</span>
+          <button class="round-btn sm" id="setA" title="设起点A">A</button>
+          <button class="round-btn sm" id="setB" title="设终点B">B</button>
+          <button class="round-btn sm" id="clearAB" title="取消循环">✕</button>
+        </div>
+        <div class="countdown-pill" id="cdPill" style="display:none;">倒计时 —</div>
       </div>
     </div>
-
     <audio id="audio" preload="metadata"></audio>
   </div>
 
@@ -79,266 +69,158 @@
   <script>
     const scoreId = window.location.pathname.split('/').pop();
     const $ = id => document.getElementById(id);
-    function toast(msg, type){ const w=$('toasts'); const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; w.appendChild(t); setTimeout(()=>t.remove(),2600); }
-    function fmt(t){ if(!isFinite(t)||t<0)return '0:00'; const m=Math.floor(t/60),s=Math.floor(t%60); return m+':'+String(s).padStart(2,'0'); }
+    function toast(m,t){const w=$('toasts');const e=document.createElement('div');e.className='toast '+(t||'');e.textContent=m;w.appendChild(e);setTimeout(()=>e.remove(),2400);}
+    function fmt(t){if(!isFinite(t)||t<0)return '0:00';const m=Math.floor(t/60),s=Math.floor(t%60);return m+':'+String(s).padStart(2,'0');}
 
-    let score=null, pages=[], mode='audio';
-    let current=0;
-    let playing=false;
-    let flipAway=[]; // per page: time to leave the page
-    // countdown state
-    let cdRemaining=0, cdTimer=null, cdStartTs=0;
-    // A-B loop
+    let score=null, pages=[], mode='audio', current=0, playing=false, flipAway=[];
+    let cdRemaining=0, cdTimer=null, cdStartTs=0, cdPillTimer=null;
     let loopA=null, loopB=null;
-
-    const audio=$('audio');
-    const hasAudio=()=>!!(score && score.audio_url);
+    const audio=$('audio'), stage=$('stage'), img=$('pageImg');
+    const hasAudio=()=>!!(score&&score.audio_url);
 
     async function init(){
       try{
         const res=await fetch('/api/scores/'+scoreId);
-        if(res.status===401){ window.location.href='/login'; return; }
-        if(!res.ok){ toast('谱子不存在','err'); setTimeout(()=>location.href='/',1200); return; }
+        if(res.status===401){location.href='/login';return;}
+        if(!res.ok){toast('谱子不存在','err');setTimeout(()=>location.href='/',1200);return;}
         score=await res.json();
-      }catch(e){ toast('加载失败','err'); return; }
-
-      pages=score.pages||[];
-      mode=score.mode;
-      $('title').textContent=score.name;
+      }catch(e){toast('加载失败','err');return;}
+      pages=score.pages||[]; mode=score.mode; $('title').textContent=score.name;
       flipAway=pages.map(p=>p.turn_seconds||0);
-
-      // preload images
-      pages.forEach(p=>{ const im=new Image(); im.src=p.image_url; });
-
+      pages.forEach(p=>{const im=new Image();im.src=p.image_url;});
       if(hasAudio()){
         audio.src=score.audio_url;
-        audio.addEventListener('loadedmetadata',()=>{ $('durTime').textContent=fmt(audio.duration); });
+        audio.addEventListener('loadedmetadata',()=>{$('durTime').textContent=fmt(audio.duration);});
         audio.addEventListener('timeupdate',onTimeUpdate);
-        audio.addEventListener('ended',()=>{ playing=false; updatePlayBtn(); });
-      }else{
-        // no audio: hide audio-only controls
-        $('progressWrap').style.display='none';
-        $('abGroup').style.display='none';
-        $('speedGroup').style.display='none';
-      }
-      if(mode==='countdown'){ $('cdPill').style.display='inline-block'; }
-
-      setPage(0);
-      bindControls();
-      updatePlayBtn();
+        audio.addEventListener('ended',()=>{playing=false;updatePlayBtn();showBars();});
+      }else{ $('progressWrap').style.display='none'; $('abGroup').style.display='none'; $('speedGroup').style.display='none'; }
+      if(mode==='countdown') $('cdPill').style.display='block';
+      setPage(0); bindControls(); updatePlayBtn();
     }
+
+    // ---------- zoom & pan ----------
+    let scale=1, tx=0, ty=0;
+    function applyT(){ img.style.transform=`translate(${tx}px,${ty}px) scale(${scale})`; }
+    function resetView(){ scale=1; tx=0; ty=0; applyT(); }
+    const clampS=s=>Math.min(6,Math.max(1,s));
+    function zoomAt(cx,cy,factor){
+      const old=scale; scale=clampS(scale*factor); const k=scale/old;
+      tx=cx-(cx-tx)*k; ty=cy-(cy-ty)*k;
+      if(scale===1){tx=0;ty=0;} applyT();
+    }
+    // PC wheel
+    stage.addEventListener('wheel',e=>{ e.preventDefault(); const r=stage.getBoundingClientRect();
+      zoomAt(e.clientX-r.left-r.width/2, e.clientY-r.top-r.height/2, e.deltaY<0?1.12:0.89); },{passive:false});
+    // PC drag pan (only when zoomed)
+    let md=false,lx=0,ly=0;
+    stage.addEventListener('mousedown',e=>{ if(e.button!==0||scale<=1)return; md=true; lx=e.clientX; ly=e.clientY; stage.classList.add('grabbing'); });
+    window.addEventListener('mousemove',e=>{ if(!md)return; tx+=e.clientX-lx; ty+=e.clientY-ly; lx=e.clientX; ly=e.clientY; applyT(); });
+    window.addEventListener('mouseup',()=>{md=false;stage.classList.remove('grabbing');});
+    stage.addEventListener('dblclick',e=>{e.preventDefault();resetView();});
+    // touch: pinch zoom + single drag + double tap reset
+    let startDist=0,startScale=1,startMid=null,startTx=0,startTy=0,panLast=null,lastTap=0;
+    const dist=t=>Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
+    const mid=t=>({x:(t[0].clientX+t[1].clientX)/2,y:(t[0].clientY+t[1].clientY)/2});
+    stage.addEventListener('touchstart',e=>{
+      if(e.touches.length===2){ startDist=dist(e.touches); startScale=scale; startMid=mid(e.touches); startTx=tx; startTy=ty; panLast=null; }
+      else if(e.touches.length===1){ panLast={x:e.touches[0].clientX,y:e.touches[0].clientY};
+        const now=Date.now(); if(now-lastTap<300){ resetView(); } lastTap=now; }
+    },{passive:false});
+    stage.addEventListener('touchmove',e=>{
+      if(e.touches.length===2){ e.preventDefault(); const d=dist(e.touches); scale=clampS(startScale*(d/startDist));
+        const m=mid(e.touches); tx=startTx+(m.x-startMid.x); ty=startTy+(m.y-startMid.y); if(scale===1){tx=0;ty=0;} applyT(); }
+      else if(e.touches.length===1 && panLast && scale>1){ e.preventDefault(); const t=e.touches[0];
+        tx+=t.clientX-panLast.x; ty+=t.clientY-panLast.y; panLast={x:t.clientX,y:t.clientY}; applyT(); }
+    },{passive:false});
 
     // ---------- paging ----------
-    function pageStart(i){ return i<=0?0:(flipAway[i-1]||0); }
-
-    function setPage(i, seekAudio){
-      if(i<0)i=0; if(i>pages.length-1)i=pages.length-1;
-      current=i;
-      $('pageImg').src=pages[i].image_url;
-      $('pageInd').textContent=(i+1)+' / '+pages.length;
-      if(mode==='audio' && hasAudio() && seekAudio){
-        audio.currentTime=pageStart(i)+0.001;
-      }
-      if(mode==='countdown'){ resetCountdown(); }
+    function pageStart(i){return i<=0?0:(flipAway[i-1]||0);}
+    function setPage(i,seek){
+      if(i<0)i=0; if(i>pages.length-1)i=pages.length-1; current=i;
+      img.src=pages[i].image_url; $('pageInd').textContent=(i+1)+'/'+pages.length;
+      resetView();  // reset zoom/pan per page
+      if(mode==='audio'&&hasAudio()&&seek) audio.currentTime=pageStart(i)+0.001;
+      if(mode==='countdown') resetCountdown();
     }
+    function nextPage(m){ if(current<pages.length-1) setPage(current+1,m); }
+    function prevPage(m){ if(current>0) setPage(current-1,m); }
 
-    function nextPage(manual){
-      if(current<pages.length-1) setPage(current+1, manual);
-    }
-    function prevPage(manual){
-      if(current>0) setPage(current-1, manual);
-    }
-
-    // ---------- audio timeupdate: auto flip + AB loop + progress ----------
+    // ---------- audio timeupdate ----------
     function onTimeUpdate(){
-      const t=audio.currentTime;
-      $('curTime').textContent=fmt(t);
-      const dur=audio.duration||1;
-      $('played').style.width=(t/dur*100)+'%';
-
-      // A-B loop
-      if(loopA!=null && loopB!=null && t>=loopB){ audio.currentTime=loopA; return; }
-
-      // auto flip (audio mode)
-      if(mode==='audio'){
-        let target=0;
-        for(let i=0;i<pages.length-1;i++){
-          const eff = flipAway[i]>0 ? flipAway[i] : Infinity;
-          if(t>=eff) target=i+1; else break;
-        }
+      const t=audio.currentTime, dur=audio.duration||1;
+      $('curTime').textContent=fmt(t); $('played').style.height=(t/dur*100)+'%';
+      if(loopA!=null&&loopB!=null&&t>=loopB){audio.currentTime=loopA;return;}
+      if(mode==='audio'){ let target=0;
+        for(let i=0;i<pages.length-1;i++){ const eff=flipAway[i]>0?flipAway[i]:Infinity; if(t>=eff)target=i+1; else break; }
         if(target!==current) setPage(target,false);
       }
     }
 
-    // ---------- countdown mode ----------
-    function resetCountdown(){
-      clearTimeout(cdTimer); cdTimer=null;
-      const dur=flipAway[current]>0?flipAway[current]:0;
-      cdRemaining=dur*1000;
-      updateCdPill();
-      if(playing) startCountdown();
-    }
-    function startCountdown(){
-      clearTimeout(cdTimer);
-      if(current>=pages.length-1 || cdRemaining<=0){ updateCdPill(); return; }
-      cdStartTs=Date.now();
-      cdTimer=setTimeout(()=>{ nextPage(false); }, cdRemaining);
-      tickCdPill();
-    }
-    function pauseCountdown(){
-      clearTimeout(cdTimer); cdTimer=null;
-      if(cdStartTs){ cdRemaining-=(Date.now()-cdStartTs); cdStartTs=0; }
-    }
-    let cdPillTimer=null;
-    function tickCdPill(){
-      clearInterval(cdPillTimer);
-      cdPillTimer=setInterval(()=>{
-        if(!playing || mode!=='countdown'){ clearInterval(cdPillTimer); return; }
-        updateCdPill();
-      },200);
-    }
-    function updateCdPill(){
-      if(mode!=='countdown')return;
-      let rem=cdRemaining;
-      if(playing && cdStartTs) rem=cdRemaining-(Date.now()-cdStartTs);
-      if(current>=pages.length-1){ $('cdPill').textContent='最后一页'; return; }
-      if(flipAway[current]<=0){ $('cdPill').textContent='本页不自动翻页'; return; }
-      $('cdPill').textContent='倒计时 '+Math.max(0,rem/1000).toFixed(1)+'s';
-    }
+    // ---------- countdown ----------
+    function resetCountdown(){ clearTimeout(cdTimer); cdTimer=null; const d=flipAway[current]>0?flipAway[current]:0; cdRemaining=d*1000; updateCdPill(); if(playing)startCountdown(); }
+    function startCountdown(){ clearTimeout(cdTimer); if(current>=pages.length-1||cdRemaining<=0){updateCdPill();return;} cdStartTs=Date.now(); cdTimer=setTimeout(()=>nextPage(false),cdRemaining); tickPill(); }
+    function pauseCountdown(){ clearTimeout(cdTimer); cdTimer=null; if(cdStartTs){cdRemaining-=(Date.now()-cdStartTs);cdStartTs=0;} }
+    function tickPill(){ clearInterval(cdPillTimer); cdPillTimer=setInterval(()=>{ if(!playing||mode!=='countdown'){clearInterval(cdPillTimer);return;} updateCdPill(); },200); }
+    function updateCdPill(){ if(mode!=='countdown')return; let rem=cdRemaining; if(playing&&cdStartTs)rem=cdRemaining-(Date.now()-cdStartTs);
+      if(current>=pages.length-1){$('cdPill').textContent='最后一页';return;}
+      if(flipAway[current]<=0){$('cdPill').textContent='本页不翻页';return;}
+      $('cdPill').textContent='⏱ '+Math.max(0,rem/1000).toFixed(1)+'s'; }
 
     // ---------- play / pause ----------
-    function play(){
-      playing=true;
-      if(hasAudio()) audio.play().catch(()=>{});
-      if(mode==='countdown') startCountdown();
-      updatePlayBtn();
-    }
-    function pause(){
-      playing=false;
-      if(hasAudio()) audio.pause();
-      if(mode==='countdown') pauseCountdown();
-      updatePlayBtn();
-    }
+    function play(){ playing=true; if(hasAudio())audio.play().catch(()=>{}); if(mode==='countdown')startCountdown(); updatePlayBtn(); scheduleHide(); }
+    function pause(){ playing=false; if(hasAudio())audio.pause(); if(mode==='countdown')pauseCountdown(); updatePlayBtn(); showBars(); clearTimeout(hideTimer); }
     function togglePlay(){ playing?pause():play(); }
     function updatePlayBtn(){ $('playBtn').textContent=playing?'⏸':'▶'; }
 
     // ---------- speed ----------
-    function setSpeed(v){
-      v=Math.min(2.0,Math.max(0.1,Math.round(v*10)/10));
-      $('speedRange').value=v;
-      $('speedVal').textContent=v.toFixed(1)+'x';
-      if(hasAudio()) audio.playbackRate=v;
-    }
+    let speed=1.0;
+    function setSpeed(v){ speed=Math.min(2.0,Math.max(0.1,Math.round(v*10)/10)); $('speedVal').textContent=speed.toFixed(1)+'x'; if(hasAudio())audio.playbackRate=speed; }
 
-    // ---------- A-B loop ----------
-    function refreshAB(){
-      const dur=audio.duration||1;
-      const mA=$('markerA'), mB=$('markerB'), fill=$('abFill');
-      if(loopA!=null){ mA.style.display='block'; mA.style.left=(loopA/dur*100)+'%'; }else mA.style.display='none';
-      if(loopB!=null){ mB.style.display='block'; mB.style.left=(loopB/dur*100)+'%'; }else mB.style.display='none';
-      if(loopA!=null&&loopB!=null){ fill.style.display='block'; fill.style.left=(loopA/dur*100)+'%'; fill.style.width=((loopB-loopA)/dur*100)+'%'; }
-      else fill.style.display='none';
-    }
+    // ---------- A-B loop (vertical) ----------
+    function refreshAB(){ const dur=audio.duration||1;
+      const mA=$('markerA'),mB=$('markerB'),f=$('abFill');
+      if(loopA!=null){mA.style.display='block';mA.style.bottom=(loopA/dur*100)+'%';}else mA.style.display='none';
+      if(loopB!=null){mB.style.display='block';mB.style.bottom=(loopB/dur*100)+'%';}else mB.style.display='none';
+      if(loopA!=null&&loopB!=null){f.style.display='block';f.style.bottom=(loopA/dur*100)+'%';f.style.height=((loopB-loopA)/dur*100)+'%';}else f.style.display='none'; }
+
+    // ---------- auto-hide (play-state based) ----------
+    let hideTimer=null;
+    function showBars(){ $('leftBar').classList.remove('player-hidden'); $('rightBar').classList.remove('player-hidden'); }
+    function hideBars(){ if(playing){ $('leftBar').classList.add('player-hidden'); $('rightBar').classList.add('player-hidden'); } }
+    function scheduleHide(){ clearTimeout(hideTimer); if(playing) hideTimer=setTimeout(hideBars,3000); }
+    function onActivity(){ showBars(); scheduleHide(); }
 
     // ---------- fullscreen ----------
-    let hideTimer=null;
-    function inFullscreen(){ return document.fullscreenElement || $('root').classList.contains('pseudo-fs'); }
-    function enterFs(){
-      const el=$('root');
-      if(el.requestFullscreen){ el.requestFullscreen().catch(()=>pseudoFs(true)); }
-      else if(el.webkitRequestFullscreen){ el.webkitRequestFullscreen(); }
-      else pseudoFs(true);
-      $('fsBtn').textContent='⛶ 退出';
-      scheduleHide();
-    }
-    function exitFs(){
-      if(document.fullscreenElement){ document.exitFullscreen().catch(()=>{}); }
-      else if(document.webkitFullscreenElement){ document.webkitExitFullscreen(); }
-      pseudoFs(false);
-      $('fsBtn').textContent='⛶ 全屏';
-      showControls();
-      clearTimeout(hideTimer);
-    }
-    function pseudoFs(on){
-      const el=$('root');
-      if(on){ el.classList.add('pseudo-fs'); document.documentElement.style.overflow='hidden'; }
-      else { el.classList.remove('pseudo-fs'); document.documentElement.style.overflow=''; }
-    }
-    function toggleFs(){ inFullscreen()?exitFs():enterFs(); }
-    document.addEventListener('fullscreenchange',()=>{
-      if(!document.fullscreenElement && !$('root').classList.contains('pseudo-fs')){
-        $('fsBtn').textContent='⛶ 全屏'; showControls(); clearTimeout(hideTimer);
-      }
-    });
-    function showControls(){ $('controls').classList.remove('player-hidden'); $('topBar').classList.remove('player-hidden'); }
-    function hideControls(){ if(inFullscreen()){ $('controls').classList.add('player-hidden'); $('topBar').classList.add('player-hidden'); } }
-    function scheduleHide(){ clearTimeout(hideTimer); if(inFullscreen()) hideTimer=setTimeout(hideControls,2600); }
-    function onActivity(){ showControls(); scheduleHide(); }
+    function inFs(){ return document.fullscreenElement||$('root').classList.contains('pseudo-fs'); }
+    function pseudoFs(on){ const el=$('root'); if(on){el.classList.add('pseudo-fs');document.documentElement.style.overflow='hidden';}else{el.classList.remove('pseudo-fs');document.documentElement.style.overflow='';} }
+    function enterFs(){ const el=$('root'); if(el.requestFullscreen)el.requestFullscreen().catch(()=>pseudoFs(true)); else if(el.webkitRequestFullscreen)el.webkitRequestFullscreen(); else pseudoFs(true); $('fsBtn').textContent='⤡'; }
+    function exitFs(){ if(document.fullscreenElement)document.exitFullscreen().catch(()=>{}); else if(document.webkitFullscreenElement)document.webkitExitFullscreen(); pseudoFs(false); $('fsBtn').textContent='⛶'; }
+    function toggleFs(){ inFs()?exitFs():enterFs(); }
+    document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElement&&!$('root').classList.contains('pseudo-fs'))$('fsBtn').textContent='⛶'; });
 
     // ---------- bind ----------
     function bindControls(){
       $('playBtn').addEventListener('click',togglePlay);
       $('prevBtn').addEventListener('click',()=>prevPage(true));
       $('nextBtn').addEventListener('click',()=>nextPage(true));
-      $('cntLeft').addEventListener('click',()=>prevPage(true));
-      $('cntRight').addEventListener('click',()=>nextPage(true));
-      $('navLeft').addEventListener('click',()=>prevPage(true));
-      $('navRight').addEventListener('click',()=>nextPage(true));
-
       $('fsBtn').addEventListener('click',toggleFs);
-
-      // speed
-      $('speedRange').addEventListener('input',e=>setSpeed(parseFloat(e.target.value)));
-      $('speedDown').addEventListener('click',()=>setSpeed(parseFloat($('speedRange').value)-0.1));
-      $('speedUp').addEventListener('click',()=>setSpeed(parseFloat($('speedRange').value)+0.1));
-
-      // progress seek
+      $('zoomReset').addEventListener('click',resetView);
+      $('speedUp').addEventListener('click',()=>setSpeed(speed+0.1));
+      $('speedDown').addEventListener('click',()=>setSpeed(speed-0.1));
       const bar=$('progressBar');
-      function seekAt(clientX){
-        const r=bar.getBoundingClientRect();
-        const ratio=Math.min(1,Math.max(0,(clientX-r.left)/r.width));
-        if(hasAudio() && audio.duration) audio.currentTime=ratio*audio.duration;
-      }
-      let dragging=false;
-      bar.addEventListener('pointerdown',e=>{ dragging=true; seekAt(e.clientX); });
-      window.addEventListener('pointermove',e=>{ if(dragging) seekAt(e.clientX); });
-      window.addEventListener('pointerup',()=>{ dragging=false; });
-
-      // A-B
-      $('setA').addEventListener('click',()=>{
-        if(!hasAudio())return; loopA=audio.currentTime;
-        if(loopB!=null && loopB<=loopA) loopB=null;
-        $('setA').classList.add('active'); refreshAB(); toast('已设起点 A：'+fmt(loopA),'ok');
-      });
-      $('setB').addEventListener('click',()=>{
-        if(!hasAudio())return;
-        const t=audio.currentTime;
-        if(loopA==null){ toast('请先设置起点 A','err'); return; }
-        if(t<=loopA){ toast('终点 B 必须晚于起点 A','err'); return; }
-        loopB=t; $('setB').classList.add('active'); refreshAB(); toast('已设终点 B：'+fmt(loopB),'ok');
-      });
-      $('clearAB').addEventListener('click',()=>{
-        loopA=loopB=null; $('setA').classList.remove('active'); $('setB').classList.remove('active'); refreshAB(); toast('已取消循环','ok');
-      });
-
-      // fullscreen auto-hide activity
-      ['mousemove','touchstart','click','keydown'].forEach(ev=>document.addEventListener(ev,onActivity,{passive:true}));
-
-      // keyboard shortcuts
-      document.addEventListener('keydown',e=>{
-        if(e.code==='Space'){ e.preventDefault(); togglePlay(); }
-        else if(e.code==='ArrowRight'){ nextPage(true); }
-        else if(e.code==='ArrowLeft'){ prevPage(true); }
-        else if(e.key==='f'||e.key==='F'){ toggleFs(); }
-      });
+      function seekAt(cy){ const r=bar.getBoundingClientRect(); const ratio=Math.min(1,Math.max(0,(r.bottom-cy)/r.height)); if(hasAudio()&&audio.duration)audio.currentTime=ratio*audio.duration; }
+      let dg=false;
+      bar.addEventListener('pointerdown',e=>{e.stopPropagation();dg=true;seekAt(e.clientY);});
+      window.addEventListener('pointermove',e=>{if(dg)seekAt(e.clientY);});
+      window.addEventListener('pointerup',()=>dg=false);
+      $('setA').addEventListener('click',()=>{ if(!hasAudio())return; loopA=audio.currentTime; if(loopB!=null&&loopB<=loopA)loopB=null; $('setA').classList.add('active'); refreshAB(); toast('起点A '+fmt(loopA),'ok'); });
+      $('setB').addEventListener('click',()=>{ if(!hasAudio())return; const t=audio.currentTime; if(loopA==null){toast('请先设A','err');return;} if(t<=loopA){toast('B需晚于A','err');return;} loopB=t; $('setB').classList.add('active'); refreshAB(); toast('终点B '+fmt(loopB),'ok'); });
+      $('clearAB').addEventListener('click',()=>{ loopA=loopB=null; $('setA').classList.remove('active'); $('setB').classList.remove('active'); refreshAB(); toast('已取消循环','ok'); });
+      ['mousemove','touchstart','click','keydown','wheel'].forEach(ev=>document.addEventListener(ev,onActivity,{passive:true}));
+      document.addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();togglePlay();} else if(e.code==='ArrowRight')nextPage(true); else if(e.code==='ArrowLeft')prevPage(true); else if(e.key==='f'||e.key==='F')toggleFs(); else if(e.key==='0')resetView(); });
     }
 
     init();
   </script>
-
-  <style>
-    /* pseudo fullscreen fallback (iOS etc.) */
-    .player-root.pseudo-fs { position: fixed; inset: 0; z-index: 9999; width:100vw; height:100vh; }
-  </style>
 </body>
 </html>
