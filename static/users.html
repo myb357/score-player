@@ -10,6 +10,7 @@
     var IS_FILE = location.protocol === 'file:';
     var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
     function authToken() { try { return localStorage.getItem('auth_token') || ''; } catch (e) { return ''; } }
+    function clearAuthToken() { try { localStorage.removeItem('auth_token'); } catch (e) {} }
     function apiFetch(path, opts) {
       opts = opts || {};
       var url = /^https?:/i.test(path) ? path : (API_BASE + path);
@@ -73,6 +74,14 @@
         <div class="cell">
           <button class="btn btn-primary" id="changePwdBtn">修改密码</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 账号操作 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">账号操作</div>
+      <div class="form-actions" style="justify-content:flex-start;">
+        <button class="btn btn-danger" id="logoutBtn" type="button">退出登录</button>
       </div>
     </div>
 
@@ -216,6 +225,12 @@
         toast('网络错误，请重试', 'err');
       }
       btn.disabled = false;
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      try { await apiFetch('/api/logout', { method: 'POST' }); } catch (e) {}
+      clearAuthToken();
+      goLogin();
     });
 
     document.getElementById('createBtn').addEventListener('click', async () => {
