@@ -425,6 +425,7 @@ PUBLIC_EXACT = {
     "/api/images/auto-crop",
     "/favicon.ico",
     "/sw.js",
+    "/download/android",
 }
 # "/api/media/" is public: it only issues a 302 redirect to a short-lived
 # presigned B2 URL. <img>/<audio> tags cannot carry the Bearer header, so the
