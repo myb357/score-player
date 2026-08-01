@@ -354,7 +354,6 @@
         const skipBtn = document.getElementById('cropSkipBtn');
         const confirmBtn = document.getElementById('cropConfirmBtn');
         let cropper = null;
-        const url = URL.createObjectURL(file);
         const data = { x: box.left, y: box.top, width: box.width, height: box.height };
 
         function cleanup(result) {
@@ -362,39 +361,47 @@
           cropper = null;
           img.removeAttribute('src');
           modal.style.display = 'none';
-          URL.revokeObjectURL(url);
           resetBtn.onclick = skipBtn.onclick = confirmBtn.onclick = null;
           resolve(result);
         }
 
-        title.textContent = '裁剪谱页图片：' + file.name;
-        img.onload = () => {
-          cropper = new Cropper(img, {
-            viewMode: 1,
-            autoCrop: true,
-            autoCropArea: 1,
-            background: false,
-            responsive: true,
-            ready() { cropper.setData(data); }
-          });
-        };
-        img.onerror = () => reject(new Error('图片加载失败'));
-        img.src = url;
-        modal.style.display = 'flex';
+        // 用 FileReader 转 data: URI，避免 Android WebView 的 createObjectURL 限制
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target.result;
 
-        resetBtn.onclick = () => { if (cropper) cropper.setData(data); };
-        skipBtn.onclick = () => cleanup(null);
-        confirmBtn.onclick = () => {
-          if (!cropper) return;
-          confirmBtn.disabled = true;
-          cropper.getCroppedCanvas({ imageSmoothingEnabled: true, imageSmoothingQuality: 'high' }).toBlob(blob => {
-            confirmBtn.disabled = false;
-            if (!blob) { toast('裁剪输出失败', 'err'); return; }
-            const type = outputTypeFor(file);
-            const cropped = new File([blob], croppedFileName(file.name, type), { type, lastModified: Date.now() });
-            cleanup({ file: cropped });
-          }, outputTypeFor(file), 0.92);
+          title.textContent = '裁剪谱页图片：' + file.name;
+          img.onload = () => {
+            if (cropper) cropper.destroy();
+            cropper = new Cropper(img, {
+              viewMode: 1,
+              autoCrop: true,
+              autoCropArea: 1,
+              background: false,
+              responsive: true,
+              ready() { cropper.setData(data); }
+            });
+          };
+          img.onerror = () => reject(new Error('图片加载失败'));
+          img.src = dataUrl;
+          modal.style.display = 'flex';
+
+          resetBtn.onclick = () => { if (cropper) cropper.setData(data); };
+          skipBtn.onclick = () => cleanup(null);
+          confirmBtn.onclick = () => {
+            if (!cropper) return;
+            confirmBtn.disabled = true;
+            cropper.getCroppedCanvas({ imageSmoothingEnabled: true, imageSmoothingQuality: 'high' }).toBlob(blob => {
+              confirmBtn.disabled = false;
+              if (!blob) { toast('裁剪输出失败', 'err'); return; }
+              const type = outputTypeFor(file);
+              const cropped = new File([blob], croppedFileName(file.name, type), { type, lastModified: Date.now() });
+              cleanup({ file: cropped });
+            }, outputTypeFor(file), 0.92);
+          };
         };
+        reader.onerror = () => reject(new Error('图片读取失败'));
+        reader.readAsDataURL(file);
       });
     }
 
