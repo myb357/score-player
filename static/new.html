@@ -15,7 +15,15 @@
     /* ---- 方案B: offline/web dual-mode runtime ---- */
     var IS_FILE = location.protocol === 'file:';
     var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
-    function authToken() { try { return localStorage.getItem('auth_token') || ''; } catch (e) { return ''; } }
+    function authToken() {
+      try {
+        var token = '';
+        if (window.AndroidBridge && typeof window.AndroidBridge.getToken === 'function') {
+          token = window.AndroidBridge.getToken() || '';
+        }
+        return token || localStorage.getItem('auth_token') || '';
+      } catch (e) { return ''; }
+    }
     function mediaUrl(u) { return (u && u.charAt(0) === '/') ? (API_BASE + u) : u; }
     function apiFetch(path, opts) {
       opts = opts || {};
@@ -324,13 +332,17 @@
       const res = await apiFetch('/api/images/auto-crop', { method: 'POST', body: fd });
       if (res.status === 401) { goLogin(); return null; }
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '自动裁剪接口异常');
-      return res.json();
+      // 同时返回 safeBlob，供 showCropDialog 使用（content:// URI 无法直接 createObjectURL）
+      return { cropResult: await res.json(), safeBlob, mimeType };
     }
 
     async function cropImageBeforeAdd(file) {
-      const auto = await requestAutoCropBox(file);
-      if (!auto) return null;
-      return showCropDialog(file, auto.box);
+      const r = await requestAutoCropBox(file);
+      if (!r) return null;
+      const { cropResult, safeBlob, mimeType } = r;
+      // 用真实 Blob 替代原始 File 传入 showCropDialog，确保 WebView 能正常显示图片
+      const displayFile = new File([safeBlob], _safeFilename(file), { type: mimeType, lastModified: Date.now() });
+      return showCropDialog(displayFile, cropResult.box);
     }
 
     function showCropDialog(file, box) {

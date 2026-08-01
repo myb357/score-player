@@ -9,10 +9,22 @@
     /* ---- 方案B: offline/web dual-mode runtime ---- */
     var IS_FILE = location.protocol === 'file:';
     var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
+    function authToken() {
+      try {
+        var token = '';
+        if (window.AndroidBridge && typeof window.AndroidBridge.getToken === 'function') {
+          token = window.AndroidBridge.getToken() || '';
+        }
+        return token || localStorage.getItem('auth_token') || '';
+      } catch (e) { return ''; }
+    }
     function apiFetch(path, opts) {
       opts = opts || {};
       var url = /^https?:/i.test(path) ? path : (API_BASE + path);
-      opts.headers = new Headers(opts.headers || {});
+      var headers = new Headers(opts.headers || {});
+      var t = authToken();
+      if (t) headers.set('Authorization', 'Bearer ' + t);
+      opts.headers = headers;
       return fetch(url, opts);
     }
     function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
@@ -61,7 +73,14 @@
         });
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
-          if (data.token) { try { localStorage.setItem('auth_token', data.token); } catch (e) {} }
+          if (data.token) {
+            try {
+              localStorage.setItem('auth_token', data.token);
+              if (window.AndroidBridge && typeof window.AndroidBridge.saveToken === 'function') {
+                window.AndroidBridge.saveToken(data.token);
+              }
+            } catch (e) {}
+          }
           goHome();
           return;
         }
