@@ -39,6 +39,7 @@ from PIL import Image
 # ----------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -480,6 +481,17 @@ async def service_worker():
         os.path.join(STATIC_DIR, "sw.js"),
         media_type="application/javascript",
         headers={"Service-Worker-Allowed": "/"},
+    )
+
+
+@app.get("/download/android")
+async def download_android_app():
+    if not os.path.isfile(ANDROID_APK_PATH):
+        return Response(status_code=404, content="Android APK not found")
+    return FileResponse(
+        ANDROID_APK_PATH,
+        media_type="application/vnd.android.package-archive",
+        filename="score-player.apk",
     )
 
 
