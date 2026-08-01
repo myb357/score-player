@@ -277,6 +277,25 @@
     .sc-download.is-downloaded { color: var(--accent-2); border-color: rgba(34,211,238,.4); }
     .badge.dl-badge { color: #34d399; border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
     .badge.dl-badge::before { content: '⤓'; margin-right: 4px; font-weight: 800; }
+    /* 制作中任务区域 */
+    .jobs-section { margin-bottom: 22px; }
+    .jobs-head { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 15px; font-weight: 700; }
+    .jobs-head .jobs-count { color: var(--muted); font-weight: 500; font-size: 13px; }
+    .jobs-list { display: flex; flex-direction: column; gap: 10px; }
+    .job-card { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 14px; background: var(--panel, rgba(255,255,255,.03)); border: 1px solid rgba(124,92,255,.18); }
+    .job-card.job-done { border-color: rgba(52,211,153,.35); cursor: pointer; transition: background .15s ease; }
+    .job-card.job-done:hover { background: rgba(52,211,153,.08); }
+    .job-card.job-error { border-color: rgba(248,113,113,.4); }
+    .job-icon { font-size: 22px; line-height: 1; flex: 0 0 auto; }
+    .job-main { flex: 1 1 auto; min-width: 0; }
+    .job-title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .job-status-text { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .job-status-text.err { color: #f87171; }
+    .job-progress { margin-top: 8px; height: 6px; border-radius: 6px; background: rgba(124,92,255,.15); overflow: hidden; }
+    .job-progress > i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg,#7c5cff,#22d3ee); transition: width .4s ease; }
+    .job-side { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; }
+    .spin-inline { display: inline-block; width: 15px; height: 15px; border: 2px solid rgba(124,92,255,.3); border-top-color: #7c5cff; border-radius: 50%; animation: jobspin .7s linear infinite; vertical-align: -2px; margin-right: 6px; }
+    @keyframes jobspin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -321,6 +340,7 @@
         <button class="btn btn-ghost btn-sm" id="batchCancel" type="button">取消</button>
       </div>
     </div>
+    <div id="jobsSection" class="jobs-section" style="display:none;"></div>
     <div id="content">
       <div class="empty"><div class="spinner"></div></div>
     </div>
@@ -336,7 +356,7 @@
         <div><strong>App 名称：</strong>谱子播放器</div>
       </div>
       <div class="form-row">
-        <div><strong>当前版本：</strong>v<span id="aboutVersion">1.2.1</span></div>
+        <div><strong>当前版本：</strong>v<span id="aboutVersion">1.3.0</span></div>
       </div>
       <div class="form-row">
         <div><strong>说明：</strong>用于管理、导入和播放曲谱，支持 Android App 与网页端使用。</div>
@@ -367,7 +387,7 @@
       setTimeout(() => t.remove(), 2600);
     }
 
-    const CURRENT_APP_VERSION = '1.2.1';
+    const CURRENT_APP_VERSION = '1.3.0';
     function compareVersions(remote, current) {
       const remoteParts = String(remote || '').split('.');
       const currentParts = String(current || '').split('.');
@@ -992,8 +1012,110 @@
       return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
+    // ---------- 制作中任务（异步谱子制作进度） ----------
+    const JOB_RECENT_MS = 30 * 60 * 1000; // done/error 仅保留最近 30 分钟
+    let jobPollTimer = null;
+    let prevJobStatus = {};
+
+    function jobCardHtml(j) {
+      const title = escapeHtml(j.title || '未命名谱子');
+      if (j.status === 'done') {
+        return `<div class="job-card job-done" data-score-id="${j.score_id != null ? j.score_id : ''}">
+            <div class="job-icon">✅</div>
+            <div class="job-main">
+              <div class="job-title">${title}</div>
+              <div class="job-status-text">已完成 · 点击进入</div>
+            </div>
+            <div class="job-side"><button class="btn btn-sm">播放</button></div>
+          </div>`;
+      }
+      if (j.status === 'error') {
+        return `<div class="job-card job-error">
+            <div class="job-icon">❌</div>
+            <div class="job-main">
+              <div class="job-title">${title}</div>
+              <div class="job-status-text err">制作失败：${escapeHtml(j.error_msg || '未知错误')}</div>
+            </div>
+            <div class="job-side"><button class="btn btn-sm job-retry">重试</button></div>
+          </div>`;
+      }
+      // pending / processing
+      const prog = Math.max(0, Math.min(100, Number(j.progress) || 0));
+      const statusText = j.status === 'processing' ? ('制作中… ' + prog + '%') : '排队中…';
+      const bar = j.status === 'processing'
+        ? `<div class="job-progress"><i style="width:${prog}%"></i></div>` : '';
+      return `<div class="job-card job-active">
+          <div class="job-icon">⏳</div>
+          <div class="job-main">
+            <div class="job-title">${title}</div>
+            <div class="job-status-text"><span class="spin-inline"></span>${statusText}</div>
+            ${bar}
+          </div>
+        </div>`;
+    }
+
+    function renderJobs(jobs) {
+      const section = document.getElementById('jobsSection');
+      const now = Date.now();
+      const visible = (jobs || []).filter(j => {
+        if (j.status === 'pending' || j.status === 'processing') return true;
+        return (now - (Number(j.updated_at) || 0) * 1000) < JOB_RECENT_MS;
+      });
+      if (visible.length === 0) {
+        section.style.display = 'none';
+        section.innerHTML = '';
+        return;
+      }
+      const activeCount = visible.filter(j => j.status === 'pending' || j.status === 'processing').length;
+      section.innerHTML = `<div class="jobs-head">🛠 制作中任务
+          <span class="jobs-count">${activeCount > 0 ? ('· ' + activeCount + ' 个进行中') : ''}</span>
+        </div>
+        <div class="jobs-list">${visible.map(jobCardHtml).join('')}</div>`;
+      section.style.display = '';
+      section.querySelectorAll('.job-card.job-done').forEach(el => {
+        el.addEventListener('click', () => {
+          const sid = el.getAttribute('data-score-id');
+          if (sid) { saveHomeState(); goPlayer(sid); }
+        });
+      });
+      section.querySelectorAll('.job-retry').forEach(el => {
+        el.addEventListener('click', (e) => { e.stopPropagation(); goNew(); });
+      });
+    }
+
+    function scheduleJobPoll(active) {
+      if (jobPollTimer) { clearTimeout(jobPollTimer); jobPollTimer = null; }
+      if (active) jobPollTimer = setTimeout(loadJobs, 3000);
+    }
+
+    async function loadJobs() {
+      try {
+        const res = await apiFetch('/api/scores/jobs?limit=10', { cache: 'no-store' });
+        if (res.status === 401) { goLogin(); return; }
+        if (!res.ok) return;
+        const data = await res.json();
+        const jobs = data.jobs || [];
+        let anyJustDone = false;
+        jobs.forEach(j => {
+          const prev = prevJobStatus[j.job_id];
+          if (prev && prev !== 'done' && j.status === 'done') anyJustDone = true;
+        });
+        prevJobStatus = {};
+        jobs.forEach(j => { prevJobStatus[j.job_id] = j.status; });
+        renderJobs(jobs);
+        if (anyJustDone) load({ skipCache: true });
+        const active = jobs.some(j => j.status === 'pending' || j.status === 'processing');
+        scheduleJobPoll(active);
+      } catch (e) { /* 网络波动忽略，下一次轮询重试 */ }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') loadJobs();
+    });
+
     loadSession();
     load().then(restoreHomeState);
+    loadJobs();
   </script>
 </body>
 </html>

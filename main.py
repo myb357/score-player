@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -17,7 +18,7 @@ from io import BytesIO
 from urllib.parse import quote
 
 import uvicorn
-from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi import FastAPI, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     JSONResponse,
@@ -41,7 +42,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.2.1")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.0")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -304,6 +305,19 @@ def init_db() -> None:
                     image_filename TEXT NOT NULL,
                     turn_seconds DOUBLE PRECISION NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS score_jobs (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    score_id INTEGER,
+                    error_msg TEXT,
+                    created_at BIGINT NOT NULL,
+                    updated_at BIGINT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_score_jobs_user_created
+                    ON score_jobs (user_id, created_at DESC);
                 """
             )
             # --- migrations for databases created before the multi-user feature ---
@@ -775,6 +789,142 @@ def _invalidate_score_cache(score_id: Optional[int] = None) -> None:
     for key in list(_api_cache.keys()):
         if key[0] == "scores_list" or (score_id is not None and key[0] == "score_detail" and key[1] == score_id):
             _api_cache.pop(key, None)
+
+
+# ----------------------------------------------------------------------------
+# Async score-creation jobs (score_jobs table)
+# ----------------------------------------------------------------------------
+_JOB_UPDATABLE_FIELDS = {"status", "progress", "score_id", "error_msg"}
+
+
+def create_job(user_id: int, title: str) -> str:
+    """Insert a fresh pending job row and return its id (uuid hex)."""
+    job_id = uuid.uuid4().hex
+    now = int(time.time())
+    db_query(
+        "INSERT INTO score_jobs (id, user_id, title, status, progress, created_at, updated_at) "
+        "VALUES (%s, %s, %s, 'pending', 0, %s, %s)",
+        (job_id, user_id, title, now, now),
+    )
+    return job_id
+
+
+def update_job(job_id: str, **fields) -> None:
+    """Update a job's status/progress/score_id/error_msg + updated_at."""
+    sets, params = [], []
+    for k, v in fields.items():
+        if k in _JOB_UPDATABLE_FIELDS:
+            sets.append(f"{k} = %s")
+            params.append(v)
+    sets.append("updated_at = %s")
+    params.append(int(time.time()))
+    params.append(job_id)
+    db_query(f"UPDATE score_jobs SET {', '.join(sets)} WHERE id = %s", tuple(params))
+
+
+def _job_to_dict(row: dict) -> dict:
+    return {
+        "job_id": row["id"],
+        "title": row["title"],
+        "status": row["status"],
+        "progress": row["progress"],
+        "score_id": row["score_id"],
+        "error_msg": row["error_msg"],
+        "created_at": row["created_at"],
+        "created_at_text": _fmt_time(row["created_at"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+def process_score_job(
+    job_id: str,
+    owner_id: int,
+    name: str,
+    mode: str,
+    page_rows: list,
+    audio_raw: Optional[bytes],
+    audio_src_ext: Optional[str],
+    t_start: Optional[float],
+    t_end: Optional[float],
+) -> None:
+    """Run the heavy score-creation work in the background (threadpool).
+
+    ``page_rows`` is a list of ``(idx, fname, ts, content_bytes)`` tuples whose
+    bytes have already been read from the request (UploadFile is closed once the
+    response returns, so all reads must happen in the request handler)."""
+    uploaded_keys: List[str] = []
+    try:
+        update_job(job_id, status="processing", progress=10)
+
+        # 1) Process audio/video -> mp3 bytes (if provided)
+        audio_filename = None
+        audio_bytes = None
+        if audio_raw is not None:
+            src_ext = audio_src_ext or ""
+            needs_processing = (
+                src_ext in ALLOWED_VIDEO_EXT
+                or src_ext != ".mp3"
+                or t_start is not None
+                or t_end is not None
+            )
+            tmp_src = None
+            tmp_dst = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=src_ext, dir=DATA_DIR) as tf:
+                    tmp_src = tf.name
+                    tf.write(audio_raw)
+                if needs_processing:
+                    tmp_dst = os.path.join(DATA_DIR, f"out_{secrets.token_hex(8)}.mp3")
+                    process_media_to_mp3(tmp_src, tmp_dst, t_start, t_end)
+                    with open(tmp_dst, "rb") as f:
+                        audio_bytes = f.read()
+                else:
+                    audio_bytes = audio_raw
+                audio_filename = "audio.mp3"
+            finally:
+                for p in (tmp_src, tmp_dst):
+                    if p and os.path.isfile(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+        update_job(job_id, status="processing", progress=40)
+
+        # 2) Insert DB rows + upload objects. Roll back B2 objects if DB fails.
+        now = int(time.time())
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO scores (name, mode, audio_filename, owner_id, created_at) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (name, mode, audio_filename, owner_id, now),
+                )
+                score_id = cur.fetchone()[0]
+                total = max(len(page_rows), 1)
+                for i, (idx, fname, ts, content) in enumerate(page_rows):
+                    key = _score_key(score_id, fname)
+                    b2_upload_bytes(key, content, _ctype(fname))
+                    uploaded_keys.append(key)
+                    cur.execute(
+                        "INSERT INTO pages (score_id, page_index, image_filename, turn_seconds) VALUES (%s, %s, %s, %s)",
+                        (score_id, idx, fname, ts),
+                    )
+                    update_job(job_id, progress=40 + int(50 * (i + 1) / total))
+                if audio_bytes is not None:
+                    key = _score_key(score_id, audio_filename)
+                    b2_upload_bytes(key, audio_bytes, "audio/mpeg")
+                    uploaded_keys.append(key)
+        _invalidate_score_cache(score_id)
+        update_job(job_id, status="done", progress=100, score_id=score_id)
+    except Exception as e:  # noqa: BLE001 - report any failure back to the job row
+        for k in uploaded_keys:
+            try:
+                get_s3().delete_object(Bucket=B2_BUCKET, Key=k)
+            except Exception:
+                pass
+        try:
+            update_job(job_id, status="error", error_msg=str(e)[:500])
+        except Exception:
+            pass
 
 
 @app.get("/api/scores")
@@ -1359,6 +1509,118 @@ async def create_score(
             except Exception:
                 pass
         return JSONResponse(status_code=500, content={"detail": f"保存失败: {e}"})
+
+
+@app.post("/api/scores/async")
+async def api_create_score_async(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    name: str = Form(...),
+    mode: str = Form(...),
+    turn_seconds: List[str] = Form(default=[]),
+    trim_start: Optional[str] = Form(default=None),
+    trim_end: Optional[str] = Form(default=None),
+    images: List[UploadFile] = File(...),
+    audio: Optional[UploadFile] = File(default=None),
+):
+    """Accept a new-score request, persist a pending job, and process it in the
+    background. Returns immediately so the frontend is never blocked."""
+    me = current_user(request)
+    name = (name or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"detail": "谱子名称不能为空"})
+    if mode not in ("audio", "countdown"):
+        return JSONResponse(status_code=400, content={"detail": "翻页模式无效"})
+    if not images:
+        return JSONResponse(status_code=400, content={"detail": "请至少上传一张谱页图片"})
+    if mode == "audio" and not (audio and audio.filename):
+        return JSONResponse(
+            status_code=400, content={"detail": "跟伴奏模式必须上传音频或视频文件"}
+        )
+
+    def _parse_float(v):
+        try:
+            f = float(v)
+            return f if f >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    t_start = _parse_float(trim_start)
+    t_end = _parse_float(trim_end)
+    if t_start is not None and t_end is not None and t_end <= t_start:
+        t_start, t_end = None, None
+
+    # Read ALL uploaded bytes now: UploadFile objects are closed once this
+    # request returns, but the background task runs afterwards.
+    page_rows = []  # (idx, fname, ts, content)
+    for idx, img in enumerate(images):
+        ext = _safe_ext(img.filename, ALLOWED_IMAGE_EXT) or ".png"
+        fname = f"page_{idx:03d}{ext}"
+        content = await img.read()
+        try:
+            ts = float(turn_seconds[idx]) if idx < len(turn_seconds) else 0.0
+        except (ValueError, TypeError):
+            ts = 0.0
+        if ts < 0:
+            ts = 0.0
+        page_rows.append((idx, fname, ts, content))
+
+    audio_raw = None
+    audio_src_ext = None
+    if audio and audio.filename:
+        audio_src_ext = os.path.splitext(audio.filename)[1].lower()
+        if audio_src_ext not in ALLOWED_AUDIO_EXT and audio_src_ext not in ALLOWED_VIDEO_EXT:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"不支持的伴奏文件格式: {audio_src_ext or '未知'}"},
+            )
+        audio_raw = await audio.read()
+
+    job_id = create_job(me["id"], name)
+    background_tasks.add_task(
+        process_score_job,
+        job_id,
+        me["id"],
+        name,
+        mode,
+        page_rows,
+        audio_raw,
+        audio_src_ext,
+        t_start,
+        t_end,
+    )
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/api/scores/jobs")
+async def list_score_jobs(request: Request, limit: int = 20):
+    """Return the current user's most recent score-creation jobs."""
+    me = current_user(request)
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit = 20
+    rows = db_query(
+        "SELECT id, title, status, progress, score_id, error_msg, created_at, updated_at "
+        "FROM score_jobs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+        (me["id"], limit),
+    )
+    return {"jobs": [_job_to_dict(r) for r in (rows or [])]}
+
+
+@app.get("/api/scores/jobs/{job_id}")
+async def get_score_job(request: Request, job_id: str):
+    """Return the detailed state of a single job owned by the current user."""
+    me = current_user(request)
+    row = db_query(
+        "SELECT id, title, status, progress, score_id, error_msg, created_at, updated_at "
+        "FROM score_jobs WHERE id = %s AND user_id = %s",
+        (job_id, me["id"]),
+        one=True,
+    )
+    if not row:
+        return JSONResponse(status_code=404, content={"detail": "任务不存在"})
+    return _job_to_dict(row)
 
 
 @app.get("/api/scores/{score_id}")

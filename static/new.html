@@ -701,18 +701,18 @@
           }
         }
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> 处理中…';
+        btn.innerHTML = '<span class="spinner"></span> 提交中…';
         try {
-          const res = await apiFetch('/api/scores', { method: 'POST', body: fd });
+          const res = await apiFetch('/api/scores/async', { method: 'POST', body: fd });
           if (res.status === 401) { goLogin(); return; }
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
             clearScoreListCache();
-            toast('保存成功', 'ok');
-            setTimeout(() => goPlayer(data.id), 600);
+            toast('已提交，正在后台制作…', 'ok');
+            setTimeout(() => goHome(), 700);
             return;
           }
-          toast(data.detail || '保存失败', 'err');
+          toast(data.detail || '提交失败', 'err');
         } catch (e) {
           toast('网络错误，请重试', 'err');
         }
