@@ -252,11 +252,43 @@
     }
 
     async function readFileAsBlob(file) {
+      // 优先使用 Android 原生 Bridge 读取 content:// URI 字节
+      // （Android WebView 无法通过 file.arrayBuffer() 读 content:// URI）
+      if (window.AndroidBridge && file.name && file.name.startsWith('content://')) {
+        try {
+          const dataUrl = window.AndroidBridge.readUriAsBase64(file.name);
+          if (dataUrl && dataUrl.startsWith('data:')) {
+            const [meta, b64] = dataUrl.split(',');
+            const mime = meta.split(':')[1].split(';')[0];
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return new Blob([bytes], { type: mime });
+          }
+        } catch (e) { /* fall through */ }
+      }
       try {
         const buf = await file.arrayBuffer();
-        return new Blob([buf], { type: file.type || 'application/octet-stream' });
+        if (buf && buf.byteLength > 0) {
+          return new Blob([buf], { type: file.type || 'image/jpeg' });
+        }
+        // arrayBuffer() 返回空（content:// URI 的典型问题），尝试 FileReader 兜底
+        return await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUrl = e.target.result;
+            const [meta, b64] = dataUrl.split(',');
+            const mime = meta.split(':')[1].split(';')[0] || file.type || 'image/jpeg';
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            resolve(new Blob([bytes], { type: mime }));
+          };
+          reader.onerror = () => resolve(file);
+          reader.readAsDataURL(file);
+        });
       } catch (e) {
-        // 降级：直接返回原 file（Web 环境通常没问题）
+        // 最后降级：直接返回原 file
         return file;
       }
     }
@@ -268,8 +300,12 @@
     }
 
     function _safeFilename(file) {
-      // Android WebView 有时返回 URI 路径片段作为文件名，或完全为空
+      // Android WebView 有时返回 content:// URI 路径片段作为文件名，或完全为空
       const raw = (file.name || '').trim();
+      // 如果是 content:// URI，直接从 MIME type 推导文件名
+      if (raw.startsWith('content://')) {
+        return 'image' + _mimeToExt(file.type);
+      }
       const hasExt = /\.(jpe?g|png|gif|webp|bmp)$/i.test(raw);
       if (raw && hasExt) return raw;
       // 从 MIME type 补全扩展名
