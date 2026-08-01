@@ -18,10 +18,11 @@
     .modal-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
     .modal-card .form-row { margin-bottom: 14px; }
     .sc-owner { position: relative; }
-    .sc-actions { position: absolute; top: 14px; right: 14px; z-index: 3; display: flex; gap: 8px; opacity: 0; transition: opacity .18s ease; }
-    .score-card:hover .sc-actions { opacity: 1; }
+    .score-card .sc-actions { position: absolute; left: 20px; right: 20px; bottom: 18px; z-index: 3; display: flex; gap: 8px; justify-content: flex-end; opacity: 0; transform: translateY(10px); transition: opacity .18s ease, transform .18s ease; }
+    .score-card:hover .sc-actions, .score-card:focus-within .sc-actions { opacity: 1; transform: translateY(0); }
     /* neutralize the standalone absolute positioning of .sc-del from style.css so buttons sit side by side */
     .score-card .sc-actions .sc-del { position: static; top: auto; right: auto; opacity: 1; }
+    .score-row .sc-actions { position: static; transform: none; }
   </style>
 </head>
 <body>

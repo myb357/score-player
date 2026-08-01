@@ -175,14 +175,9 @@
         if(res.status===401){location.href='/login';return;}
         if(!res.ok){toast('谱子不存在','err');setTimeout(()=>location.href='/',1200);return;}
         const fresh=await res.json();
-        const hasUpdate=!cached||cached.version!==versionOf(fresh);
         writeCachedScore(fresh);
-        if(!cached||hasUpdate){
-          await cacheScoreAssets(fresh);
-          await applyScore(fresh);
-        }else{
-          cacheScoreAssets(fresh);
-        }
+        await cacheScoreAssets(fresh);
+        await applyScore(fresh);
       }catch(e){
         if(!cached)toast('加载失败','err');
         else toast('已使用本地缓存，后台更新失败','err');

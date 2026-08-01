@@ -1,4 +1,4 @@
-const CACHE_NAME = 'score-player-pwa-v1';
+const CACHE_NAME = 'score-player-pwa-v2';
 const APP_SHELL = [
   '/',
   '/assets/style.css',
@@ -27,7 +27,7 @@ self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);
 
-  if (request.method !== 'GET' || url.pathname.startsWith('/api/')) {
+  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) {
     return;
   }
 
@@ -35,11 +35,15 @@ self.addEventListener('fetch', event => {
     fetch(request)
       .then(response => {
         const responseToCache = response.clone();
-        if (response.ok && url.origin === self.location.origin) {
+        if (response.ok) {
           caches.open(CACHE_NAME).then(cache => cache.put(request, responseToCache));
         }
         return response;
       })
-      .catch(() => caches.match(request).then(cached => cached || caches.match('/')))
+      .catch(() => caches.match(request).then(cached => {
+        if (cached) return cached;
+        if (request.mode === 'navigate') return caches.match('/');
+        return Response.error();
+      }))
   );
 });
