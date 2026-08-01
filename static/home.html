@@ -17,8 +17,8 @@
     .modal-card h2 { margin: 0 0 6px; font-size: 20px; }
     .modal-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
     .modal-card .form-row { margin-bottom: 14px; }
-    .sc-owner { font-size: 12px; color: var(--muted); margin: -4px 0 10px; position: relative; }
-    .sc-actions { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex; gap: 8px; opacity: 0; }
+    .sc-owner { position: relative; }
+    .sc-actions { position: absolute; top: 14px; right: 14px; z-index: 3; display: flex; gap: 8px; opacity: 0; transition: opacity .18s ease; }
     .score-card:hover .sc-actions { opacity: 1; }
     /* neutralize the standalone absolute positioning of .sc-del from style.css so buttons sit side by side */
     .score-card .sc-actions .sc-del { position: static; top: auto; right: auto; opacity: 1; }
@@ -47,7 +47,13 @@
   <div class="container">
     <div class="page-head">
       <h1>我的谱子</h1>
-      <button class="btn btn-ghost" id="batchToggleBtn" type="button" style="display:none;">批量选择</button>
+      <div class="page-actions">
+        <div class="view-toggle" id="viewToggle" role="group" aria-label="视图模式切换" style="display:none;">
+          <button class="view-btn active" id="cardViewBtn" type="button" aria-pressed="true" title="卡片视图">▦</button>
+          <button class="view-btn" id="listViewBtn" type="button" aria-pressed="false" title="列表视图">☰</button>
+        </div>
+        <button class="btn btn-ghost" id="batchToggleBtn" type="button" style="display:none;">批量选择</button>
+      </div>
     </div>
     <div class="batch-toolbar panel" id="batchToolbar" style="display:none;">
       <div class="batch-count" id="batchCount">已选 0 个</div>
@@ -211,7 +217,7 @@
     async function clearAllLocalCaches() {
       localStorage.removeItem(SCORE_LIST_CACHE_KEY);
       Object.keys(localStorage).forEach(key => {
-        if (key.indexOf('score-player:score-detail:') === 0 || key.indexOf('score-player:view-mode:') === 0) {
+        if (key.indexOf('score-player:score-detail:') === 0 || key.indexOf('score-player:view-mode:') === 0 || key === 'score-player:home-view-mode') {
           localStorage.removeItem(key);
         }
       });
@@ -323,9 +329,14 @@
 
     function modeLabel(m) { return m === 'audio' ? '跟伴奏时间轴' : '独立倒计时'; }
 
+    const SCORE_VIEW_MODE_KEY = 'score-player:home-view-mode';
     let scoreList = [];
     let batchMode = false;
+    let viewMode = localStorage.getItem(SCORE_VIEW_MODE_KEY) === 'list' ? 'list' : 'card';
     const selectedScores = new Set();
+    const viewToggle = document.getElementById('viewToggle');
+    const cardViewBtn = document.getElementById('cardViewBtn');
+    const listViewBtn = document.getElementById('listViewBtn');
     const batchToggleBtn = document.getElementById('batchToggleBtn');
     const batchToolbar = document.getElementById('batchToolbar');
     const batchCount = document.getElementById('batchCount');
@@ -359,6 +370,24 @@
       updateBatchUI();
       renderScores();
     }
+
+    function updateViewToggle() {
+      cardViewBtn.classList.toggle('active', viewMode === 'card');
+      listViewBtn.classList.toggle('active', viewMode === 'list');
+      cardViewBtn.setAttribute('aria-pressed', String(viewMode === 'card'));
+      listViewBtn.setAttribute('aria-pressed', String(viewMode === 'list'));
+    }
+
+    function setViewMode(mode) {
+      viewMode = mode === 'list' ? 'list' : 'card';
+      localStorage.setItem(SCORE_VIEW_MODE_KEY, viewMode);
+      updateViewToggle();
+      renderScores();
+    }
+
+    cardViewBtn.addEventListener('click', () => setViewMode('card'));
+    listViewBtn.addEventListener('click', () => setViewMode('list'));
+    updateViewToggle();
 
     batchToggleBtn.addEventListener('click', () => setBatchMode(!batchMode));
     batchCancel.addEventListener('click', () => setBatchMode(false));
@@ -437,6 +466,76 @@
       }
     });
 
+    function actionButtonsHtml(id, includePlay) {
+      return `
+        ${includePlay ? `<button class="btn btn-sm sc-play" data-id="${id}">播放</button>` : ''}
+        <button class="btn btn-sm sc-export" data-id="${id}">导出</button>
+        <button class="btn btn-sm sc-edit" data-id="${id}">编辑</button>
+        <button class="btn btn-danger btn-sm sc-del" data-id="${id}">删除</button>`;
+    }
+
+    function metaBadgesHtml(s) {
+      const ownerHtml = (currentRole === 'superadmin' && s.owner)
+        ? `<span class="badge sc-owner-badge">创建者：${escapeHtml(s.owner)}</span>` : '';
+      return `
+        ${ownerHtml}
+        <span class="badge accent">${modeLabel(s.mode)}</span>
+        <span class="badge">${s.page_count} 页</span>
+        ${s.has_audio ? '<span class="badge">含伴奏</span>' : ''}`;
+    }
+
+    function bindScoreItemActions(item, s) {
+      const id = Number(s.id);
+      item.addEventListener('click', (e) => {
+        if (e.target.closest('.sc-actions')) return;
+        if (batchMode) {
+          e.preventDefault();
+          toggleScoreSelection(id);
+          return;
+        }
+        window.location.href = '/player/' + id;
+      });
+      const check = item.querySelector('.batch-check input');
+      if (check) {
+        check.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleScoreSelection(id);
+        });
+      }
+      const playBtn = item.querySelector('.sc-play');
+      if (playBtn) {
+        playBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.location.href = '/player/' + id;
+        });
+      }
+      item.querySelector('.sc-export').addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.location.href = '/api/scores/' + id + '/export';
+      });
+      item.querySelector('.sc-edit').addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.location.href = '/new?edit=' + id;
+      });
+      item.querySelector('.sc-del').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm('确定删除《' + s.name + '》？此操作不可撤销')) return;
+        const r = await fetch('/api/scores/' + id, { method: 'DELETE' });
+        if (r.ok) {
+          localStorage.removeItem(SCORE_LIST_CACHE_KEY);
+          if ('caches' in window) {
+            const cache = await caches.open(SCORE_CACHE_NAME);
+            await cache.delete('/api/scores/' + id);
+          }
+          localStorage.removeItem('score-player:score-detail:' + id);
+          toast('已删除', 'ok');
+          load({ skipCache: true });
+        } else {
+          toast('删除失败', 'err');
+        }
+      });
+    }
+
     function renderScores() {
       const content = document.getElementById('content');
       if (scoreList.length === 0) {
@@ -444,6 +543,7 @@
             <div class="big">🎵</div>
             <div>还没有谱子，点击右上角「新建谱子」开始吧</div>
           </div>`;
+        viewToggle.style.display = 'none';
         batchToggleBtn.style.display = 'none';
         batchMode = false;
         selectedScores.clear();
@@ -452,77 +552,43 @@
         updateBatchUI();
         return;
       }
+      viewToggle.style.display = '';
       batchToggleBtn.style.display = '';
-      const grid = document.createElement('div');
-      grid.className = 'grid' + (batchMode ? ' batch-mode' : '');
+      updateViewToggle();
+      const wrap = document.createElement('div');
+      wrap.className = (viewMode === 'list' ? 'score-list' : 'grid') + (batchMode ? ' batch-mode' : '');
       scoreList.forEach(s => {
         const id = Number(s.id);
         const checked = selectedScores.has(id);
-        const card = document.createElement('div');
-        card.className = 'panel score-card' + (checked ? ' selected' : '');
-        const ownerHtml = (currentRole === 'superadmin' && s.owner)
-          ? `<div class="sc-owner">创建者：<span class="badge">${escapeHtml(s.owner)}</span></div>` : '';
         const checkboxHtml = batchMode
           ? `<label class="batch-check" aria-label="选择 ${escapeHtml(s.name)}"><input type="checkbox" ${checked ? 'checked' : ''} /></label>` : '';
-        card.innerHTML = `
+        const item = document.createElement('div');
+        if (viewMode === 'list') {
+          item.className = 'score-row' + (checked ? ' selected' : '');
+          item.innerHTML = `
             ${checkboxHtml}
-            <div class="sc-actions">
-              <button class="btn btn-sm sc-export" data-id="${id}">导出</button>
-              <button class="btn btn-sm sc-edit" data-id="${id}">编辑</button>
-              <button class="btn btn-danger btn-sm sc-del" data-id="${id}">删除</button>
+            <div class="sr-main">
+              <div class="sr-name">${escapeHtml(s.name)}</div>
+              <div class="sr-meta">${metaBadgesHtml(s)}</div>
             </div>
+            <div class="sr-side">
+              <div class="sc-time">创建于 ${s.created_at_text}</div>
+              <div class="sc-actions">${actionButtonsHtml(id, true)}</div>
+            </div>`;
+        } else {
+          item.className = 'panel score-card' + (checked ? ' selected' : '');
+          item.innerHTML = `
+            ${checkboxHtml}
+            <div class="sc-actions">${actionButtonsHtml(id, false)}</div>
             <div class="sc-name">${escapeHtml(s.name)}</div>
-            ${ownerHtml}
-            <div class="sc-meta">
-              <span class="badge accent">${modeLabel(s.mode)}</span>
-              <span class="badge">${s.page_count} 页</span>
-              ${s.has_audio ? '<span class="badge">含伴奏</span>' : ''}
-            </div>
+            <div class="sc-meta">${metaBadgesHtml(s)}</div>
             <div class="sc-time">创建于 ${s.created_at_text}</div>`;
-        card.addEventListener('click', (e) => {
-          if (e.target.closest('.sc-actions')) return;
-          if (batchMode) {
-            e.preventDefault();
-            toggleScoreSelection(id);
-            return;
-          }
-          window.location.href = '/player/' + id;
-        });
-        const check = card.querySelector('.batch-check input');
-        if (check) {
-          check.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleScoreSelection(id);
-          });
         }
-        card.querySelector('.sc-export').addEventListener('click', (e) => {
-          e.stopPropagation();
-          window.location.href = '/api/scores/' + id + '/export';
-        });
-        card.querySelector('.sc-edit').addEventListener('click', (e) => {
-          e.stopPropagation();
-          window.location.href = '/new?edit=' + id;
-        });
-        card.querySelector('.sc-del').addEventListener('click', async (e) => {
-          e.stopPropagation();
-          if (!confirm('确定删除《' + s.name + '》？此操作不可撤销')) return;
-          const r = await fetch('/api/scores/' + id, { method: 'DELETE' });
-          if (r.ok) {
-            localStorage.removeItem(SCORE_LIST_CACHE_KEY);
-            if ('caches' in window) {
-              const cache = await caches.open(SCORE_CACHE_NAME);
-              await cache.delete('/api/scores/' + id);
-            }
-            localStorage.removeItem('score-player:score-detail:' + id);
-            toast('已删除', 'ok');
-            load({ skipCache: true });
-          }
-          else toast('删除失败', 'err');
-        });
-        grid.appendChild(card);
+        bindScoreItemActions(item, s);
+        wrap.appendChild(item);
       });
       content.innerHTML = '';
-      content.appendChild(grid);
+      content.appendChild(wrap);
       updateBatchUI();
     }
 
