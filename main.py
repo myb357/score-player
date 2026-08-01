@@ -694,9 +694,39 @@ def _fmt_time(ts: int) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
+API_CACHE_TTL_SECONDS = 60
+_api_cache = {}
+
+
+def _cache_get(key):
+    item = _api_cache.get(key)
+    if not item:
+        return None
+    cached_at, value = item
+    if time.time() - cached_at > API_CACHE_TTL_SECONDS:
+        _api_cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key, value):
+    _api_cache[key] = (time.time(), value)
+    return value
+
+
+def _invalidate_score_cache(score_id: Optional[int] = None) -> None:
+    for key in list(_api_cache.keys()):
+        if key[0] == "scores_list" or (score_id is not None and key[0] == "score_detail" and key[1] == score_id):
+            _api_cache.pop(key, None)
+
+
 @app.get("/api/scores")
 async def list_scores(request: Request):
     me = current_user(request)
+    cache_key = ("scores_list", me["id"], me["role"])
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     if me["role"] == "superadmin":
         rows = db_query(
             "SELECT s.id, s.name, s.mode, s.audio_filename, s.created_at, u.username AS owner "
@@ -713,6 +743,11 @@ async def list_scores(request: Request):
         cnt = db_query(
             "SELECT COUNT(*) AS c FROM pages WHERE score_id = %s", (r["id"],), one=True
         )
+        first_page = db_query(
+            "SELECT image_filename FROM pages WHERE score_id = %s ORDER BY page_index LIMIT 1",
+            (r["id"],),
+            one=True,
+        )
         result.append(
             {
                 "id": r["id"],
@@ -723,9 +758,10 @@ async def list_scores(request: Request):
                 "owner": r.get("owner"),
                 "created_at": r["created_at"],
                 "created_at_text": _fmt_time(r["created_at"]),
+                "cover_url": _media_url(r["id"], first_page["image_filename"]) if first_page else "",
             }
         )
-    return {"scores": result, "role": me["role"]}
+    return _cache_set(cache_key, {"scores": result, "role": me["role"]})
 
 
 def _safe_ext(filename: str, allowed: set) -> Optional[str]:
@@ -952,6 +988,7 @@ async def batch_delete_scores(request: Request):
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM scores WHERE id = ANY(%s)", (ids,))
+    _invalidate_score_cache()
     return {"ok": True, "deleted": len(ids), "b2_deleted": len(keys_to_delete)}
 
 
@@ -1032,6 +1069,7 @@ async def import_score(request: Request, package: UploadFile = File(...)):
                     key = _score_key(score_id, audio_filename)
                     b2_upload_bytes(key, audio_bytes, "audio/mpeg")
                     uploaded_keys.append(key)
+        _invalidate_score_cache(score_id)
         return {"ok": True, "id": score_id}
     except zipfile.BadZipFile:
         return JSONResponse(status_code=400, content={"detail": "ZIP 文件无法解析"})
@@ -1222,6 +1260,7 @@ async def create_score(
                     key = _score_key(score_id, audio_filename)
                     b2_upload_bytes(key, audio_bytes, "audio/mpeg")
                     uploaded_keys.append(key)
+        _invalidate_score_cache(score_id)
         return {"ok": True, "id": score_id}
     except Exception as e:
         # best-effort cleanup of any uploaded objects
@@ -1236,6 +1275,10 @@ async def create_score(
 @app.get("/api/scores/{score_id}")
 async def get_score(request: Request, score_id: int):
     me = current_user(request)
+    cache_key = ("score_detail", score_id, me["id"], me["role"])
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     row = db_query(
         "SELECT id, name, mode, audio_filename, owner_id, created_at FROM scores WHERE id = %s",
         (score_id,),
@@ -1249,7 +1292,7 @@ async def get_score(request: Request, score_id: int):
         "SELECT page_index, image_filename, turn_seconds FROM pages WHERE score_id = %s ORDER BY page_index",
         (score_id,),
     )
-    return {
+    result = {
         "id": row["id"],
         "name": row["name"],
         "mode": row["mode"],
@@ -1268,6 +1311,7 @@ async def get_score(request: Request, score_id: int):
             for p in (pages or [])
         ],
     }
+    return _cache_set(cache_key, result)
 
 
 @app.delete("/api/scores/{score_id}")
@@ -1285,6 +1329,7 @@ async def delete_score(request: Request, score_id: int):
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM scores WHERE id = %s", (score_id,))
+    _invalidate_score_cache(score_id)
     return {"ok": True, "b2_deleted": len(keys_to_delete)}
 
 
@@ -1456,6 +1501,7 @@ async def update_score(
             b2_delete_key(_score_key(score_id, old_audio_filename))
         except Exception:
             pass
+    _invalidate_score_cache(score_id)
     return {"ok": True, "id": score_id}
 
 

@@ -494,6 +494,7 @@
           toggleScoreSelection(id);
           return;
         }
+        saveHomeState();
         window.location.href = '/player/' + id;
       });
       const check = item.querySelector('.batch-check input');
@@ -507,6 +508,7 @@
       if (playBtn) {
         playBtn.addEventListener('click', (e) => {
           e.stopPropagation();
+          saveHomeState();
           window.location.href = '/player/' + id;
         });
       }
@@ -535,6 +537,33 @@
           toast('删除失败', 'err');
         }
       });
+    }
+
+    function saveHomeState() {
+      try {
+        sessionStorage.setItem('score-player:home-state', JSON.stringify({
+          scrollY: window.scrollY,
+          viewMode,
+          cachedAt: Date.now(),
+        }));
+      } catch (e) { /* ignore */ }
+    }
+
+    function restoreHomeState() {
+      try {
+        const state = JSON.parse(sessionStorage.getItem('score-player:home-state') || 'null');
+        if (!state) return;
+        if (state.viewMode) {
+          viewMode = state.viewMode === 'list' ? 'list' : 'card';
+          localStorage.setItem(SCORE_VIEW_MODE_KEY, viewMode);
+        }
+        requestAnimationFrame(() => window.scrollTo(0, state.scrollY || 0));
+      } catch (e) { /* ignore */ }
+    }
+
+    function renderSkeleton() {
+      const content = document.getElementById('content');
+      content.innerHTML = '<div class="grid skeleton-grid">' + Array.from({ length: 6 }).map(() => '<div class="panel score-card skeleton-card"><div class="score-cover placeholder"></div><div class="sk sk-title"></div><div class="sk sk-line"></div><div class="sk sk-line short"></div></div>').join('') + '</div>';
     }
 
     function renderScores() {
@@ -581,6 +610,7 @@
           item.innerHTML = `
             ${checkboxHtml}
             <div class="sc-actions">${actionButtonsHtml(id, false)}</div>
+            ${s.cover_url ? `<div class="score-cover"><img src="${escapeHtml(s.cover_url)}" alt="${escapeHtml(s.name)} 封面" loading="lazy" decoding="async" /></div>` : '<div class="score-cover placeholder">🎼</div>'}
             <div class="sc-name">${escapeHtml(s.name)}</div>
             <div class="sc-meta">${metaBadgesHtml(s)}</div>
             <div class="sc-time">创建于 ${s.created_at_text}</div>`;
@@ -597,6 +627,7 @@
       const content = document.getElementById('content');
       const opts = options || {};
       const cached = opts.skipCache ? null : readScoreListCache();
+      if (!cached) renderSkeleton();
       if (cached) {
         scoreList = cached.scores;
         if (cached.role === 'superadmin') {
@@ -630,7 +661,7 @@
     }
 
     loadSession();
-    load();
+    load().then(restoreHomeState);
   </script>
 </body>
 </html>

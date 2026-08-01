@@ -39,6 +39,10 @@
       <!-- STAGE -->
       <div class="stage" id="stage">
         <img id="pageImg" alt="谱页" />
+        <div class="page-loading" id="pageLoading"><span class="spinner"></span></div>
+        <div class="mini-progress" id="miniProgress" aria-label="播放进度" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="mini-progress-fill" id="miniProgressFill"></div>
+        </div>
         <div class="seek-preview" id="seekPreview" aria-hidden="true">
           <div class="seek-preview-head">
             <span id="seekPreviewLabel">快进</span>
@@ -94,6 +98,7 @@
     let loopA=null, loopB=null;
     let viewMode='contain';
     const audio=$('audio'), stage=$('stage'), img=$('pageImg');
+    const pageLoading=$('pageLoading'), miniProgress=$('miniProgress'), miniProgressFill=$('miniProgressFill');
     const hasAudio=()=>!!(score&&score.audio_url);
     const SCORE_CACHE_NAME='score-player-score-assets-v1';
     const detailCacheKey=()=>`score-player:score-detail:${scoreId}`;
@@ -125,9 +130,17 @@
       }catch(e){/* keep existing cache */}
     }
     async function cacheScoreAssets(data){
-      const tasks=(data.pages||[]).map(p=>refreshAsset(p.image_url));
-      if(data.audio_url)tasks.push(refreshAsset(data.audio_url));
-      await Promise.allSettled(tasks);
+      const firstPages=(data.pages||[]).slice(0,2).map(p=>refreshAsset(p.image_url));
+      if(data.audio_url)firstPages.push(refreshAsset(data.audio_url));
+      await Promise.allSettled(firstPages);
+    }
+    function preloadPage(i){
+      const p=pages[i];
+      if(!p||!p.image_url)return;
+      const preloader=new Image();
+      preloader.decoding='async';
+      preloader.src=p.cached_image_url||p.image_url;
+      refreshAsset(p.image_url);
     }
     let controlsBound=false;
     async function applyScore(data){
@@ -202,7 +215,7 @@
     stage.addEventListener('mousedown',e=>{ if(viewMode==='scroll'||e.button!==0||scale<=1)return; md=true; lx=e.clientX; ly=e.clientY; stage.classList.add('grabbing'); });
     window.addEventListener('mousemove',e=>{ if(!md)return; tx+=e.clientX-lx; ty+=e.clientY-ly; lx=e.clientX; ly=e.clientY; applyT(); });
     window.addEventListener('mouseup',()=>{md=false;stage.classList.remove('grabbing');});
-    stage.addEventListener('dblclick',e=>{e.preventDefault();resetView();});
+    stage.addEventListener('dblclick',e=>{e.preventDefault(); if(mode==='audio'&&hasAudio())togglePlay(); else resetView();});
     // touch: pinch zoom + single drag + double tap reset + horizontal seek
     let startDist=0,startScale=1,startMid=null,startTx=0,startTy=0,panLast=null,lastTap=0;
     let seekTouch=null;
@@ -243,7 +256,7 @@
       if(e.touches.length===2){ startDist=dist(e.touches); startScale=scale; startMid=mid(e.touches); startTx=tx; startTy=ty; panLast=null; }
       else if(e.touches.length===1){ const t=e.touches[0]; panLast={x:t.clientX,y:t.clientY};
         seekTouch=canSeekAudio()&&scale<=1?{startX:t.clientX,startY:t.clientY,base:audio.currentTime,target:audio.currentTime,active:false}:null;
-        const now=Date.now(); if(now-lastTap<300){ resetView(); seekTouch=null; } lastTap=now; }
+        const now=Date.now(); if(now-lastTap<300){ e.preventDefault(); if(mode==='audio'&&hasAudio())togglePlay(); else resetView(); seekTouch=null; } lastTap=now; }
     },{passive:false});
     stage.addEventListener('touchmove',e=>{
       if(viewMode==='scroll')return;
@@ -266,6 +279,9 @@
     function pageStart(i){return i<=0?0:(flipAway[i-1]||0);}
     function setPage(i,seek){
       if(i<0)i=0; if(i>pages.length-1)i=pages.length-1; current=i;
+      pageLoading.classList.add('show');
+      img.onload=()=>{pageLoading.classList.remove('show');preloadPage(current+1);};
+      img.onerror=()=>pageLoading.classList.remove('show');
       img.src=pages[i].cached_image_url||pages[i].image_url; $('pageInd').textContent=(i+1)+'/'+pages.length;
       resetView();  // reset zoom/pan per page
       if(mode==='audio'&&hasAudio()&&seek) audio.currentTime=pageStart(i)+0.001;
@@ -274,10 +290,27 @@
     function nextPage(m){ if(current<pages.length-1) setPage(current+1,m); }
     function prevPage(m){ if(current>0) setPage(current-1,m); }
 
+    function updateMiniProgress(t,dur){
+      const pct=dur>0?Math.max(0,Math.min(100,t/dur*100)):0;
+      miniProgressFill.style.width=pct+'%';
+      miniProgress.setAttribute('aria-valuenow',String(Math.round(pct)));
+    }
+    function seekFromMiniProgress(clientX){
+      if(!canSeekAudio())return;
+      const r=miniProgress.getBoundingClientRect();
+      const pct=Math.max(0,Math.min(1,(clientX-r.left)/r.width));
+      seekTo(pct*audio.duration);
+    }
+    let miniSeeking=false;
+    miniProgress.addEventListener('pointerdown',e=>{e.preventDefault();miniSeeking=true;miniProgress.setPointerCapture(e.pointerId);seekFromMiniProgress(e.clientX);});
+    miniProgress.addEventListener('pointermove',e=>{if(miniSeeking){e.preventDefault();seekFromMiniProgress(e.clientX);}});
+    miniProgress.addEventListener('pointerup',()=>{miniSeeking=false;});
+    miniProgress.addEventListener('pointercancel',()=>{miniSeeking=false;});
+
     // ---------- audio timeupdate ----------
     function onTimeUpdate(){
       const t=audio.currentTime, dur=audio.duration||1;
-      $('curTime').textContent=fmt(t); $('played').style.height=(t/dur*100)+'%';
+      $('curTime').textContent=fmt(t); $('played').style.height=(t/dur*100)+'%'; updateMiniProgress(t,dur);
       if(loopA!=null&&loopB!=null&&t>=loopB){audio.currentTime=loopA;return;}
       if(mode==='audio'){ let target=0;
         for(let i=0;i<pages.length-1;i++){ const eff=flipAway[i]>0?flipAway[i]:Infinity; if(t>=eff)target=i+1; else break; }
