@@ -261,10 +261,30 @@
       }
     }
 
+    function _mimeToExt(mimeType) {
+      const m = { 'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/png': '.png',
+                  'image/gif': '.gif', 'image/webp': '.webp', 'image/bmp': '.bmp' };
+      return m[(mimeType || '').split(';')[0].trim().toLowerCase()] || '.jpg';
+    }
+
+    function _safeFilename(file) {
+      // Android WebView 有时返回 URI 路径片段作为文件名，或完全为空
+      const raw = (file.name || '').trim();
+      const hasExt = /\.(jpe?g|png|gif|webp|bmp)$/i.test(raw);
+      if (raw && hasExt) return raw;
+      // 从 MIME type 补全扩展名
+      const ext = _mimeToExt(file.type);
+      const base = raw.replace(/\.[^.]*$/, '') || 'image';
+      return base + ext;
+    }
+
     async function requestAutoCropBox(file) {
       const fd = new FormData();
+      const mimeType = file.type || 'image/jpeg';
       const blob = await readFileAsBlob(file);
-      fd.append('image', blob, file.name);
+      // 确保 Blob 带正确 MIME type，filename 带合法扩展名
+      const safeBlob = new Blob([blob], { type: mimeType });
+      fd.append('image', safeBlob, _safeFilename(file));
       const res = await apiFetch('/api/images/auto-crop', { method: 'POST', body: fd });
       if (res.status === 401) { goLogin(); return null; }
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '自动裁剪接口异常');

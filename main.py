@@ -41,7 +41,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.1.1")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.1.2")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -1187,10 +1187,29 @@ def detect_light_margin_crop_box(data: bytes) -> dict:
         }
 
 
+_MIME_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
 @app.post("/api/images/auto-crop")
 async def api_auto_crop_image(image: UploadFile = File(...)):
+    # 先尝试从文件名拿扩展名，失败时从 Content-Type 兜底（Android WebView
+    # 通过 file:// URI 选图时 filename 可能为空或无扩展名）
     ext = _safe_ext(image.filename, ALLOWED_IMAGE_EXT)
     if not ext:
+        ct = (image.content_type or "").split(";")[0].strip().lower()
+        ext = _MIME_TO_EXT.get(ct)
+    if not ext:
+        print(
+            f"[auto-crop] rejected: filename={image.filename!r}, "
+            f"content_type={image.content_type!r}"
+        )
         return JSONResponse(status_code=400, content={"detail": "不支持的图片文件格式"})
     try:
         content = await image.read()
@@ -1206,7 +1225,8 @@ async def api_auto_crop_image(image: UploadFile = File(...)):
         import traceback
 
         print(
-            f"[auto-crop error] filename={image.filename}, "
+            f"[auto-crop error] filename={image.filename!r}, "
+            f"content_type={image.content_type!r}, "
             f"content_len={len(content) if 'content' in dir() else 'N/A'}, error={e}"
         )
         traceback.print_exc()
