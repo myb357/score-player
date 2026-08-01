@@ -1,13 +1,14 @@
 import hashlib
+import json
 import mimetypes
 import os
 import re
 import secrets
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
 import uvicorn
@@ -18,27 +19,40 @@ from fastapi.responses import (
     RedirectResponse,
     FileResponse,
     Response,
-    StreamingResponse,
 )
 from typing import List, Optional
+
+import psycopg2
+import psycopg2.extras
+from psycopg2 import pool as pg_pool
+import boto3
+from botocore.config import Config as BotoConfig
 
 # ----------------------------------------------------------------------------
 # Paths & configuration
 # ----------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-# Runtime data must live on a writable path (the app bundle is read-only at runtime).
+# Runtime data dir is only used for transient ffmpeg temp files now
+# (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
-UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
-DB_PATH = os.path.join(DATA_DIR, "scores.db")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# --- Database (Supabase PostgreSQL) -----------------------------------------
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+# --- Object storage (Backblaze B2, S3-compatible) ---------------------------
+B2_KEY_ID = os.environ.get("B2_KEY_ID", "")
+B2_APP_KEY = os.environ.get("B2_APP_KEY", "")
+B2_ENDPOINT = os.environ.get("B2_ENDPOINT", "")  # e.g. s3.ca-east-006.backblazeb2.com
+B2_BUCKET = os.environ.get("B2_BUCKET", "")
+B2_REGION = os.environ.get("B2_REGION", "")  # e.g. ca-east-006 (auto-derived if empty)
+# Presigned URL lifetime (S3 max is 7 days = 604800s).
+PRESIGN_TTL = int(os.environ.get("B2_PRESIGN_TTL", str(7 * 24 * 3600)))
 
 # Fixed admin credentials. Only the PBKDF2 hash is stored (encrypted at rest).
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
-ADMIN_SALT = os.environ.get(
-    "ADMIN_SALT", "151ef02104f1cd54a042d2295e9929b8"
-)
+ADMIN_SALT = os.environ.get("ADMIN_SALT", "151ef02104f1cd54a042d2295e9929b8")
 ADMIN_HASH = os.environ.get(
     "ADMIN_HASH",
     "05bc42913eabcaf3539599387c1380eb9e67d9484b654650403b3c1a1ae381ba",
@@ -50,6 +64,82 @@ SESSION_COOKIE = "sid"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 ALLOWED_AUDIO_EXT = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 ALLOWED_VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".flv", ".wmv"}
+
+
+def _ctype(fname: str) -> str:
+    c, _ = mimetypes.guess_type(fname)
+    return c or "application/octet-stream"
+
+
+# ----------------------------------------------------------------------------
+# Backblaze B2 (S3) storage helpers
+# ----------------------------------------------------------------------------
+def _b2_endpoint_url() -> str:
+    ep = B2_ENDPOINT.strip()
+    if ep and not ep.startswith("http"):
+        ep = "https://" + ep
+    return ep
+
+
+def _b2_region() -> str:
+    if B2_REGION:
+        return B2_REGION
+    m = re.match(r"(?:https?://)?s3\.([^.]+)\.backblazeb2\.com", B2_ENDPOINT or "")
+    return m.group(1) if m else "us-east-005"
+
+
+_s3_client = None
+
+
+def get_s3():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client(
+            "s3",
+            endpoint_url=_b2_endpoint_url(),
+            aws_access_key_id=B2_KEY_ID,
+            aws_secret_access_key=B2_APP_KEY,
+            region_name=_b2_region(),
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
+        )
+    return _s3_client
+
+
+def _score_key(score_id: int, filename: str) -> str:
+    return f"scores/{score_id}/{filename}"
+
+
+def b2_upload_bytes(key: str, data: bytes, content_type: str) -> None:
+    get_s3().put_object(
+        Bucket=B2_BUCKET, Key=key, Body=data, ContentType=content_type
+    )
+
+
+def b2_presigned_url(key: str, ttl: int = PRESIGN_TTL) -> str:
+    return get_s3().generate_presigned_url(
+        "get_object", Params={"Bucket": B2_BUCKET, "Key": key}, ExpiresIn=ttl
+    )
+
+
+def b2_delete_prefix(prefix: str) -> None:
+    s3 = get_s3()
+    token = None
+    while True:
+        kwargs = {"Bucket": B2_BUCKET, "Prefix": prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kwargs)
+        objs = [{"Key": o["Key"]} for o in resp.get("Contents", [])]
+        if objs:
+            s3.delete_objects(Bucket=B2_BUCKET, Delete={"Objects": objs})
+        if resp.get("IsTruncated"):
+            token = resp.get("NextContinuationToken")
+        else:
+            break
 
 
 # ----------------------------------------------------------------------------
@@ -84,21 +174,15 @@ def process_media_to_mp3(
     if not ffmpeg:
         raise RuntimeError("服务器未安装 ffmpeg，无法处理音视频")
 
-    cmd = [ffmpeg, "-y"]
-    # Accurate trimming: place -ss/-to after -i.
-    cmd += ["-i", src_path]
+    cmd = [ffmpeg, "-y", "-i", src_path]
     if trim_start is not None and trim_start > 0:
         cmd += ["-ss", f"{trim_start:.3f}"]
     if trim_end is not None and trim_end > 0:
         cmd += ["-to", f"{trim_end:.3f}"]
-    # -vn: drop any video stream; encode audio to mp3.
     cmd += ["-vn", "-acodec", "libmp3lame", "-q:a", "2", dest_path]
 
     proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=600,
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600
     )
     if proc.returncode != 0 or not os.path.isfile(dest_path):
         tail = proc.stderr.decode("utf-8", "ignore")[-800:]
@@ -106,110 +190,173 @@ def process_media_to_mp3(
 
 
 # ----------------------------------------------------------------------------
-# Database helpers
+# Database helpers (Supabase PostgreSQL via psycopg2)
 # ----------------------------------------------------------------------------
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+_pg_pool = None
+
+
+def _dsn() -> str:
+    """Return the DSN, ensuring SSL is required (Supabase mandates SSL)."""
+    dsn = DATABASE_URL
+    if dsn and "sslmode=" not in dsn:
+        dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
+    return dsn
+
+
+def get_pool():
+    global _pg_pool
+    if _pg_pool is None:
+        if not DATABASE_URL:
+            raise RuntimeError("DATABASE_URL 未配置")
+        _pg_pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=_dsn())
+    return _pg_pool
+
+
+@contextmanager
+def db_conn():
+    p = get_pool()
+    conn = p.getconn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        p.putconn(conn)
+
+
+def db_query(sql: str, params=(), one: bool = False):
+    with db_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            if cur.description is None:
+                return None
+            rows = cur.fetchall()
+            return (rows[0] if rows else None) if one else rows
 
 
 def init_db() -> None:
-    conn = get_db()
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                created_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS scores (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                mode TEXT NOT NULL,
-                audio_filename TEXT,
-                created_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS pages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                score_id INTEGER NOT NULL,
-                page_index INTEGER NOT NULL,
-                image_filename TEXT NOT NULL,
-                turn_seconds REAL NOT NULL DEFAULT 0,
-                FOREIGN KEY (score_id) REFERENCES scores(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    salt TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    created_at BIGINT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token TEXT PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    created_at BIGINT NOT NULL,
+                    expires_at BIGINT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS scores (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    audio_filename TEXT,
+                    owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    created_at BIGINT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS pages (
+                    id SERIAL PRIMARY KEY,
+                    score_id INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE,
+                    page_index INTEGER NOT NULL,
+                    image_filename TEXT NOT NULL,
+                    turn_seconds DOUBLE PRECISION NOT NULL DEFAULT 0
+                );
+                """
+            )
+            # --- migrations for databases created before the multi-user feature ---
+            cur.execute(
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;"
+            )
+            cur.execute(
+                "ALTER TABLE scores ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE;"
+            )
+            # drop stale sessions that predate the users table (user_id NULL)
+            cur.execute("DELETE FROM sessions WHERE user_id IS NULL;")
+            # --- seed the initial super administrator ---
+            cur.execute("SELECT COUNT(*) FROM users WHERE username = %s", (ADMIN_USERNAME,))
+            if cur.fetchone()[0] == 0:
+                cur.execute(
+                    "INSERT INTO users (username, salt, password_hash, role, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (ADMIN_USERNAME, ADMIN_SALT, ADMIN_HASH, "superadmin", int(time.time())),
+                )
 
 
 def cleanup_sessions() -> None:
-    conn = get_db()
-    try:
-        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (int(time.time()),))
-        conn.commit()
-    finally:
-        conn.close()
+    db_query("DELETE FROM sessions WHERE expires_at < %s", (int(time.time()),))
 
 
 # ----------------------------------------------------------------------------
 # Auth helpers
 # ----------------------------------------------------------------------------
-def verify_password(password: str) -> bool:
+def make_salt() -> str:
+    return secrets.token_hex(16)
+
+
+def hash_pw(password: str, salt_hex: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), PBKDF2_ROUNDS
+    ).hex()
+
+
+def verify_pw(password: str, salt_hex: str, expected_hash: str) -> bool:
     try:
-        computed = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), bytes.fromhex(ADMIN_SALT), PBKDF2_ROUNDS
-        ).hex()
+        return secrets.compare_digest(hash_pw(password, salt_hex), expected_hash)
     except Exception:
         return False
-    return secrets.compare_digest(computed, ADMIN_HASH)
 
 
-def create_session() -> str:
+def create_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
     now = int(time.time())
-    conn = get_db()
-    try:
-        conn.execute(
-            "INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)",
-            (token, now, now + SESSION_TTL_SECONDS),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    db_query(
+        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (%s, %s, %s, %s)",
+        (token, user_id, now, now + SESSION_TTL_SECONDS),
+    )
     return token
 
 
-def session_valid(token: Optional[str]) -> bool:
+def get_session_user(token: Optional[str]) -> Optional[dict]:
+    """Resolve a session cookie to a live user, or None if invalid/expired."""
     if not token:
-        return False
-    conn = get_db()
+        return None
     try:
-        row = conn.execute(
-            "SELECT expires_at FROM sessions WHERE token = ?", (token,)
-        ).fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return False
-    return int(row["expires_at"]) >= int(time.time())
+        row = db_query(
+            "SELECT s.expires_at, u.id, u.username, u.role "
+            "FROM sessions s JOIN users u ON s.user_id = u.id "
+            "WHERE s.token = %s",
+            (token,),
+            one=True,
+        )
+    except Exception:
+        return None
+    if not row or int(row["expires_at"]) < int(time.time()):
+        return None
+    return {"id": row["id"], "username": row["username"], "role": row["role"]}
 
 
 def destroy_session(token: Optional[str]) -> None:
     if not token:
         return
-    conn = get_db()
-    try:
-        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
-        conn.commit()
-    finally:
-        conn.close()
+    db_query("DELETE FROM sessions WHERE token = %s", (token,))
+
+
+def current_user(request: Request) -> Optional[dict]:
+    return getattr(request.state, "user", None)
+
+
+def is_superadmin(request: Request) -> bool:
+    u = current_user(request)
+    return bool(u and u.get("role") == "superadmin")
 
 
 # ----------------------------------------------------------------------------
@@ -221,7 +368,6 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-# Paths that never require an authenticated session.
 PUBLIC_EXACT = {"/login", "/api/login", "/api", "/api/v1/ping", "/favicon.ico"}
 PUBLIC_PREFIX = ("/assets/", "/api/docs", "/api/redoc", "/api/openapi.json")
 
@@ -229,18 +375,14 @@ PUBLIC_PREFIX = ("/assets/", "/api/docs", "/api/redoc", "/api/openapi.json")
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
     path = request.url.path
-
     if path in PUBLIC_EXACT or any(path.startswith(p) for p in PUBLIC_PREFIX):
         return await call_next(request)
-
-    token = request.cookies.get(SESSION_COOKIE)
-    if session_valid(token):
+    user = get_session_user(request.cookies.get(SESSION_COOKIE))
+    if user:
+        request.state.user = user
         return await call_next(request)
-
-    # Not authenticated
     if path.startswith("/api/"):
         return JSONResponse(status_code=401, content={"detail": "未登录或会话已过期"})
-    # Page routes -> redirect to login
     return RedirectResponse(url="/login", status_code=302)
 
 
@@ -286,6 +428,11 @@ async def player_page(score_id: int):
     return serve_page("player.html")
 
 
+@app.get("/users", response_class=HTMLResponse)
+async def users_page():
+    return serve_page("users.html")
+
+
 @app.get("/assets/{filename:path}")
 async def assets(filename: str):
     return serve_static_file(filename)
@@ -323,11 +470,16 @@ async def api_login(request: Request):
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
 
-    if username != ADMIN_USERNAME or not verify_password(password):
+    row = db_query(
+        "SELECT id, salt, password_hash FROM users WHERE username = %s",
+        (username,),
+        one=True,
+    )
+    if not row or not verify_pw(password, row["salt"], row["password_hash"]):
         return JSONResponse(status_code=401, content={"detail": "用户名或密码错误"})
 
     cleanup_sessions()
-    token = create_session()
+    token = create_session(row["id"])
     resp = JSONResponse(content={"ok": True})
     resp.set_cookie(
         key=SESSION_COOKIE,
@@ -351,62 +503,181 @@ async def api_logout(request: Request):
 
 
 @app.get("/api/session")
-async def api_session():
-    # If the request reached here, auth_gate already validated the session.
-    return {"authenticated": True, "username": ADMIN_USERNAME}
+async def api_session(request: Request):
+    u = current_user(request)
+    return {"authenticated": True, "username": u["username"], "role": u["role"]}
+
+
+# ----------------------------------------------------------------------------
+# User management API (superadmin) + self-service password change
+# ----------------------------------------------------------------------------
+VALID_ROLES = ("superadmin", "user")
+
+
+@app.get("/api/users")
+async def api_list_users(request: Request):
+    if not is_superadmin(request):
+        return JSONResponse(status_code=403, content={"detail": "需要超级管理员权限"})
+    rows = db_query(
+        "SELECT id, username, role, created_at FROM users ORDER BY id"
+    )
+    return {
+        "users": [
+            {
+                "id": r["id"],
+                "username": r["username"],
+                "role": r["role"],
+                "created_at_text": _fmt_time(r["created_at"]),
+            }
+            for r in (rows or [])
+        ]
+    }
+
+
+@app.post("/api/users")
+async def api_create_user(request: Request):
+    if not is_superadmin(request):
+        return JSONResponse(status_code=403, content={"detail": "需要超级管理员权限"})
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    role = body.get("role") or "user"
+    if not username:
+        return JSONResponse(status_code=400, content={"detail": "用户名不能为空"})
+    if role not in VALID_ROLES:
+        return JSONResponse(status_code=400, content={"detail": "角色无效"})
+    if len(password) < 6:
+        return JSONResponse(status_code=400, content={"detail": "密码至少 6 位"})
+    if db_query("SELECT id FROM users WHERE username = %s", (username,), one=True):
+        return JSONResponse(status_code=400, content={"detail": "用户名已存在"})
+    salt = make_salt()
+    db_query(
+        "INSERT INTO users (username, salt, password_hash, role, created_at) VALUES (%s, %s, %s, %s, %s)",
+        (username, salt, hash_pw(password, salt), role, int(time.time())),
+    )
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+async def api_delete_user(request: Request, user_id: int):
+    me = current_user(request)
+    if not is_superadmin(request):
+        return JSONResponse(status_code=403, content={"detail": "需要超级管理员权限"})
+    if user_id == me["id"]:
+        return JSONResponse(status_code=400, content={"detail": "不能删除当前登录的自己"})
+    row = db_query("SELECT id, role FROM users WHERE id = %s", (user_id,), one=True)
+    if not row:
+        return JSONResponse(status_code=404, content={"detail": "用户不存在"})
+    if row["role"] == "superadmin":
+        cnt = db_query(
+            "SELECT COUNT(*) AS c FROM users WHERE role = 'superadmin'", one=True
+        )["c"]
+        if cnt <= 1:
+            return JSONResponse(
+                status_code=400, content={"detail": "不能删除最后一个超级管理员"}
+            )
+    # collect the user's scores so we can clean their B2 objects after cascade delete
+    sids = db_query("SELECT id FROM scores WHERE owner_id = %s", (user_id,)) or []
+    db_query("DELETE FROM users WHERE id = %s", (user_id,))  # cascades scores/pages/sessions
+    for s in sids:
+        try:
+            b2_delete_prefix(f"scores/{s['id']}/")
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/password")
+async def api_reset_user_password(request: Request, user_id: int):
+    if not is_superadmin(request):
+        return JSONResponse(status_code=403, content={"detail": "需要超级管理员权限"})
+    body = await request.json()
+    new_pw = body.get("new_password") or ""
+    if len(new_pw) < 6:
+        return JSONResponse(status_code=400, content={"detail": "新密码至少 6 位"})
+    if not db_query("SELECT id FROM users WHERE id = %s", (user_id,), one=True):
+        return JSONResponse(status_code=404, content={"detail": "用户不存在"})
+    salt = make_salt()
+    db_query(
+        "UPDATE users SET salt = %s, password_hash = %s WHERE id = %s",
+        (salt, hash_pw(new_pw, salt), user_id),
+    )
+    # force re-login for that user
+    db_query("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+    return {"ok": True}
+
+
+@app.post("/api/me/password")
+async def api_change_my_password(request: Request):
+    me = current_user(request)
+    body = await request.json()
+    old_pw = body.get("old_password") or ""
+    new_pw = body.get("new_password") or ""
+    if len(new_pw) < 6:
+        return JSONResponse(status_code=400, content={"detail": "新密码至少 6 位"})
+    row = db_query(
+        "SELECT salt, password_hash FROM users WHERE id = %s", (me["id"],), one=True
+    )
+    if not row or not verify_pw(old_pw, row["salt"], row["password_hash"]):
+        return JSONResponse(status_code=400, content={"detail": "原密码错误"})
+    salt = make_salt()
+    db_query(
+        "UPDATE users SET salt = %s, password_hash = %s WHERE id = %s",
+        (salt, hash_pw(new_pw, salt), me["id"]),
+    )
+    return {"ok": True}
 
 
 # ----------------------------------------------------------------------------
 # Scores API
 # ----------------------------------------------------------------------------
 def _fmt_time(ts: int) -> str:
-    # Display in China Standard Time (UTC+8)
     dt = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
 @app.get("/api/scores")
-async def list_scores():
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            "SELECT id, name, mode, audio_filename, created_at FROM scores ORDER BY created_at DESC"
-        ).fetchall()
-        result = []
-        for r in rows:
-            page_count = conn.execute(
-                "SELECT COUNT(*) AS c FROM pages WHERE score_id = ?", (r["id"],)
-            ).fetchone()["c"]
-            result.append(
-                {
-                    "id": r["id"],
-                    "name": r["name"],
-                    "mode": r["mode"],
-                    "page_count": page_count,
-                    "has_audio": bool(r["audio_filename"]),
-                    "created_at": r["created_at"],
-                    "created_at_text": _fmt_time(r["created_at"]),
-                }
-            )
-        return {"scores": result}
-    finally:
-        conn.close()
+async def list_scores(request: Request):
+    me = current_user(request)
+    if me["role"] == "superadmin":
+        rows = db_query(
+            "SELECT s.id, s.name, s.mode, s.audio_filename, s.created_at, u.username AS owner "
+            "FROM scores s LEFT JOIN users u ON s.owner_id = u.id ORDER BY s.created_at DESC"
+        )
+    else:
+        rows = db_query(
+            "SELECT s.id, s.name, s.mode, s.audio_filename, s.created_at, %s AS owner "
+            "FROM scores s WHERE s.owner_id = %s ORDER BY s.created_at DESC",
+            (me["username"], me["id"]),
+        )
+    result = []
+    for r in rows or []:
+        cnt = db_query(
+            "SELECT COUNT(*) AS c FROM pages WHERE score_id = %s", (r["id"],), one=True
+        )
+        result.append(
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "mode": r["mode"],
+                "page_count": cnt["c"] if cnt else 0,
+                "has_audio": bool(r["audio_filename"]),
+                "owner": r.get("owner"),
+                "created_at": r["created_at"],
+                "created_at_text": _fmt_time(r["created_at"]),
+            }
+        )
+    return {"scores": result, "role": me["role"]}
 
 
 def _safe_ext(filename: str, allowed: set) -> Optional[str]:
     ext = os.path.splitext(filename or "")[1].lower()
-    if ext in allowed:
-        return ext
-    return None
-
-
-def _rmtree(path: str) -> None:
-    if os.path.isdir(path):
-        shutil.rmtree(path, ignore_errors=True)
+    return ext if ext in allowed else None
 
 
 @app.post("/api/scores")
 async def create_score(
+    request: Request,
     name: str = Form(...),
     mode: str = Form(...),
     turn_seconds: List[str] = Form(default=[]),
@@ -415,6 +686,7 @@ async def create_score(
     images: List[UploadFile] = File(...),
     audio: Optional[UploadFile] = File(default=None),
 ):
+    me = current_user(request)
     name = (name or "").strip()
     if not name:
         return JSONResponse(status_code=400, content={"detail": "谱子名称不能为空"})
@@ -427,7 +699,6 @@ async def create_score(
             status_code=400, content={"detail": "跟伴奏模式必须上传音频或视频文件"}
         )
 
-    # Parse trim range
     def _parse_float(v):
         try:
             f = float(v)
@@ -438,220 +709,343 @@ async def create_score(
     t_start = _parse_float(trim_start)
     t_end = _parse_float(trim_end)
     if t_start is not None and t_end is not None and t_end <= t_start:
-        t_start, t_end = None, None  # invalid range -> ignore trimming
+        t_start, t_end = None, None
 
     now = int(time.time())
-    conn = get_db()
-    try:
-        cur = conn.execute(
-            "INSERT INTO scores (name, mode, audio_filename, created_at) VALUES (?, ?, ?, ?)",
-            (name, mode, None, now),
-        )
-        score_id = cur.lastrowid
-        score_dir = os.path.join(UPLOAD_DIR, str(score_id))
-        os.makedirs(score_dir, exist_ok=True)
 
-        # Save images
-        for idx, img in enumerate(images):
-            ext = _safe_ext(img.filename, ALLOWED_IMAGE_EXT) or ".png"
-            fname = f"page_{idx:03d}{ext}"
-            dest = os.path.join(score_dir, fname)
-            content = await img.read()
-            with open(dest, "wb") as f:
-                f.write(content)
-            try:
-                ts = float(turn_seconds[idx]) if idx < len(turn_seconds) else 0.0
-            except (ValueError, TypeError):
-                ts = 0.0
-            if ts < 0:
-                ts = 0.0
-            conn.execute(
-                "INSERT INTO pages (score_id, page_index, image_filename, turn_seconds) VALUES (?, ?, ?, ?)",
-                (score_id, idx, fname, ts),
+    # 1) Read + upload images (collect for possible rollback of B2 objects)
+    uploaded_keys: List[str] = []
+    page_rows = []  # (idx, fname, ts)
+    for idx, img in enumerate(images):
+        ext = _safe_ext(img.filename, ALLOWED_IMAGE_EXT) or ".png"
+        fname = f"page_{idx:03d}{ext}"
+        content = await img.read()
+        try:
+            ts = float(turn_seconds[idx]) if idx < len(turn_seconds) else 0.0
+        except (ValueError, TypeError):
+            ts = 0.0
+        if ts < 0:
+            ts = 0.0
+        page_rows.append((idx, fname, ts, content))
+
+    # 2) Process audio/video -> mp3 bytes (if provided)
+    audio_filename = None
+    audio_bytes = None
+    if audio and audio.filename:
+        src_ext = os.path.splitext(audio.filename)[1].lower()
+        if src_ext not in ALLOWED_AUDIO_EXT and src_ext not in ALLOWED_VIDEO_EXT:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"不支持的伴奏文件格式: {src_ext or '未知'}"},
             )
+        needs_processing = (
+            src_ext in ALLOWED_VIDEO_EXT
+            or src_ext != ".mp3"
+            or t_start is not None
+            or t_end is not None
+        )
+        tmp_src = None
+        tmp_dst = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=src_ext, dir=DATA_DIR) as tf:
+                tmp_src = tf.name
+                tf.write(await audio.read())
+            if needs_processing:
+                tmp_dst = os.path.join(DATA_DIR, f"out_{secrets.token_hex(8)}.mp3")
+                process_media_to_mp3(tmp_src, tmp_dst, t_start, t_end)
+                with open(tmp_dst, "rb") as f:
+                    audio_bytes = f.read()
+                audio_filename = "audio.mp3"
+            else:
+                with open(tmp_src, "rb") as f:
+                    audio_bytes = f.read()
+                audio_filename = "audio.mp3"
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"detail": f"伴奏处理失败: {e}"})
+        finally:
+            for p in (tmp_src, tmp_dst):
+                if p and os.path.isfile(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
-        # Save & process audio/video -> mp3 (extract track from video, trim if requested)
-        audio_filename = None
-        if audio and audio.filename:
-            src_ext = os.path.splitext(audio.filename)[1].lower()
-            is_media = src_ext in ALLOWED_AUDIO_EXT or src_ext in ALLOWED_VIDEO_EXT
-            if not is_media:
-                conn.rollback()
-                _rmtree(score_dir)
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": f"不支持的伴奏文件格式: {src_ext or '未知'}"},
+    # 3) Insert DB rows + upload objects. Roll back B2 objects if DB fails.
+    try:
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO scores (name, mode, audio_filename, owner_id, created_at) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (name, mode, audio_filename, me["id"], now),
                 )
+                score_id = cur.fetchone()[0]
+                for idx, fname, ts, content in page_rows:
+                    key = _score_key(score_id, fname)
+                    b2_upload_bytes(key, content, _ctype(fname))
+                    uploaded_keys.append(key)
+                    cur.execute(
+                        "INSERT INTO pages (score_id, page_index, image_filename, turn_seconds) VALUES (%s, %s, %s, %s)",
+                        (score_id, idx, fname, ts),
+                    )
+                if audio_bytes is not None:
+                    key = _score_key(score_id, audio_filename)
+                    b2_upload_bytes(key, audio_bytes, "audio/mpeg")
+                    uploaded_keys.append(key)
+        return {"ok": True, "id": score_id}
+    except Exception as e:
+        # best-effort cleanup of any uploaded objects
+        for k in uploaded_keys:
+            try:
+                get_s3().delete_object(Bucket=B2_BUCKET, Key=k)
+            except Exception:
+                pass
+        return JSONResponse(status_code=500, content={"detail": f"保存失败: {e}"})
 
-            needs_processing = (
+
+@app.get("/api/scores/{score_id}")
+async def get_score(request: Request, score_id: int):
+    me = current_user(request)
+    row = db_query(
+        "SELECT id, name, mode, audio_filename, owner_id, created_at FROM scores WHERE id = %s",
+        (score_id,),
+        one=True,
+    )
+    if not row:
+        return JSONResponse(status_code=404, content={"detail": "谱子不存在"})
+    if me["role"] != "superadmin" and row["owner_id"] != me["id"]:
+        return JSONResponse(status_code=403, content={"detail": "无权访问该谱子"})
+    pages = db_query(
+        "SELECT page_index, image_filename, turn_seconds FROM pages WHERE score_id = %s ORDER BY page_index",
+        (score_id,),
+    )
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "mode": row["mode"],
+        "created_at": row["created_at"],
+        "created_at_text": _fmt_time(row["created_at"]),
+        "can_edit": me["role"] == "superadmin" or row["owner_id"] == me["id"],
+        "audio_filename": row["audio_filename"],
+        "audio_url": (
+            b2_presigned_url(_score_key(score_id, row["audio_filename"]))
+            if row["audio_filename"]
+            else None
+        ),
+        "pages": [
+            {
+                "index": p["page_index"],
+                "filename": p["image_filename"],
+                "image_url": b2_presigned_url(_score_key(score_id, p["image_filename"])),
+                "turn_seconds": p["turn_seconds"],
+            }
+            for p in (pages or [])
+        ],
+    }
+
+
+@app.delete("/api/scores/{score_id}")
+async def delete_score(request: Request, score_id: int):
+    me = current_user(request)
+    row = db_query(
+        "SELECT id, owner_id FROM scores WHERE id = %s", (score_id,), one=True
+    )
+    if not row:
+        return JSONResponse(status_code=404, content={"detail": "谱子不存在"})
+    if me["role"] != "superadmin" and row["owner_id"] != me["id"]:
+        return JSONResponse(status_code=403, content={"detail": "无权删除该谱子"})
+    db_query("DELETE FROM scores WHERE id = %s", (score_id,))
+    # Remove associated objects from B2 (best-effort)
+    try:
+        b2_delete_prefix(f"scores/{score_id}/")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------------
+# Update / edit an existing score (owner or superadmin)
+# ----------------------------------------------------------------------------
+@app.post("/api/scores/{score_id}/update")
+async def update_score(
+    request: Request,
+    score_id: int,
+    name: str = Form(...),
+    mode: str = Form(...),
+    pages_meta: str = Form(...),
+    audio_action: str = Form("keep"),  # keep | replace | remove
+    trim_start: Optional[str] = Form(default=None),
+    trim_end: Optional[str] = Form(default=None),
+    images: List[UploadFile] = File(default=[]),  # new files, in order of 'new' entries
+    audio: Optional[UploadFile] = File(default=None),
+):
+    me = current_user(request)
+    row = db_query(
+        "SELECT id, mode, audio_filename, owner_id FROM scores WHERE id = %s",
+        (score_id,),
+        one=True,
+    )
+    if not row:
+        return JSONResponse(status_code=404, content={"detail": "谱子不存在"})
+    if me["role"] != "superadmin" and row["owner_id"] != me["id"]:
+        return JSONResponse(status_code=403, content={"detail": "无权编辑该谱子"})
+
+    name = (name or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"detail": "谱子名称不能为空"})
+    if mode not in ("audio", "countdown"):
+        return JSONResponse(status_code=400, content={"detail": "翻页模式无效"})
+    try:
+        meta = json.loads(pages_meta)
+        assert isinstance(meta, list) and meta
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "页面数据无效"})
+
+    existing = db_query(
+        "SELECT image_filename FROM pages WHERE score_id = %s", (score_id,)
+    ) or []
+    existing_files = {p["image_filename"] for p in existing}
+
+    def _pf(v):
+        try:
+            f = float(v)
+            return f if f >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    # Build the new ordered page list; upload new images with unique keys.
+    new_uploaded_keys: List[str] = []
+    final_pages = []  # (image_filename, turn_seconds)
+    new_iter = iter(images or [])
+    try:
+        for item in meta:
+            turn = item.get("turn", 0) or 0
+            try:
+                turn = float(turn)
+            except (TypeError, ValueError):
+                turn = 0.0
+            if turn < 0:
+                turn = 0.0
+            kind = item.get("kind")
+            if kind == "existing":
+                fn = item.get("filename")
+                if fn in existing_files:
+                    final_pages.append((fn, turn))
+            elif kind == "new":
+                up = next(new_iter, None)
+                if up is None or not up.filename:
+                    continue
+                ext = _safe_ext(up.filename, ALLOWED_IMAGE_EXT) or ".png"
+                fn = f"p_{secrets.token_hex(8)}{ext}"
+                content = await up.read()
+                key = _score_key(score_id, fn)
+                b2_upload_bytes(key, content, _ctype(fn))
+                new_uploaded_keys.append(key)
+                final_pages.append((fn, turn))
+        if not final_pages:
+            raise ValueError("至少需要保留或上传一张谱页图片")
+
+        # Audio handling
+        t_start = _pf(trim_start)
+        t_end = _pf(trim_end)
+        if t_start is not None and t_end is not None and t_end <= t_start:
+            t_start, t_end = None, None
+
+        audio_filename = row["audio_filename"]
+        replaced_audio = False
+        if audio_action == "remove":
+            audio_filename = None
+        elif audio_action == "replace":
+            if not (audio and audio.filename):
+                raise ValueError("选择替换音频但未提供文件")
+            src_ext = os.path.splitext(audio.filename)[1].lower()
+            if src_ext not in ALLOWED_AUDIO_EXT and src_ext not in ALLOWED_VIDEO_EXT:
+                raise ValueError(f"不支持的伴奏文件格式: {src_ext or '未知'}")
+            needs = (
                 src_ext in ALLOWED_VIDEO_EXT
                 or src_ext != ".mp3"
                 or t_start is not None
                 or t_end is not None
             )
-
-            tmp_src = None
+            tmp_src = tmp_dst = None
             try:
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=src_ext, dir=DATA_DIR
-                ) as tf:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=src_ext, dir=DATA_DIR) as tf:
                     tmp_src = tf.name
                     tf.write(await audio.read())
-
-                audio_filename = "audio.mp3"
-                dest = os.path.join(score_dir, audio_filename)
-                if needs_processing:
-                    process_media_to_mp3(tmp_src, dest, t_start, t_end)
+                if needs:
+                    tmp_dst = os.path.join(DATA_DIR, f"out_{secrets.token_hex(8)}.mp3")
+                    process_media_to_mp3(tmp_src, tmp_dst, t_start, t_end)
+                    with open(tmp_dst, "rb") as f:
+                        abytes = f.read()
                 else:
-                    shutil.move(tmp_src, dest)
-                    tmp_src = None
-            except Exception as e:
-                conn.rollback()
-                _rmtree(score_dir)
-                if tmp_src and os.path.isfile(tmp_src):
-                    os.remove(tmp_src)
-                return JSONResponse(
-                    status_code=500, content={"detail": f"伴奏处理失败: {e}"}
-                )
+                    with open(tmp_src, "rb") as f:
+                        abytes = f.read()
             finally:
-                if tmp_src and os.path.isfile(tmp_src):
-                    os.remove(tmp_src)
+                for p in (tmp_src, tmp_dst):
+                    if p and os.path.isfile(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+            b2_upload_bytes(_score_key(score_id, "audio.mp3"), abytes, "audio/mpeg")
+            audio_filename = "audio.mp3"
+            replaced_audio = True
 
-            conn.execute(
-                "UPDATE scores SET audio_filename = ? WHERE id = ?",
-                (audio_filename, score_id),
-            )
+        if mode == "audio" and not audio_filename:
+            raise ValueError("跟伴奏模式必须有音频伴奏")
 
-        conn.commit()
-        return {"ok": True, "id": score_id}
-    finally:
-        conn.close()
-
-
-@app.get("/api/scores/{score_id}")
-async def get_score(score_id: int):
-    conn = get_db()
-    try:
-        row = conn.execute(
-            "SELECT id, name, mode, audio_filename, created_at FROM scores WHERE id = ?",
-            (score_id,),
-        ).fetchone()
-        if not row:
-            return JSONResponse(status_code=404, content={"detail": "谱子不存在"})
-        pages = conn.execute(
-            "SELECT page_index, image_filename, turn_seconds FROM pages WHERE score_id = ? ORDER BY page_index",
-            (score_id,),
-        ).fetchall()
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "mode": row["mode"],
-            "created_at": row["created_at"],
-            "created_at_text": _fmt_time(row["created_at"]),
-            "audio_url": (
-                f"/api/media/{score_id}/{row['audio_filename']}"
-                if row["audio_filename"]
-                else None
-            ),
-            "pages": [
-                {
-                    "index": p["page_index"],
-                    "image_url": f"/api/media/{score_id}/{p['image_filename']}",
-                    "turn_seconds": p["turn_seconds"],
-                }
-                for p in pages
-            ],
-        }
-    finally:
-        conn.close()
-
-
-@app.delete("/api/scores/{score_id}")
-async def delete_score(score_id: int):
-    conn = get_db()
-    try:
-        row = conn.execute("SELECT id FROM scores WHERE id = ?", (score_id,)).fetchone()
-        if not row:
-            return JSONResponse(status_code=404, content={"detail": "谱子不存在"})
-        conn.execute("DELETE FROM scores WHERE id = ?", (score_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    # Remove files
-    score_dir = os.path.join(UPLOAD_DIR, str(score_id))
-    if os.path.isdir(score_dir):
-        for fn in os.listdir(score_dir):
+        # Persist: rewrite pages + update score in one transaction
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM pages WHERE score_id = %s", (score_id,))
+                for idx, (fn, ts) in enumerate(final_pages):
+                    cur.execute(
+                        "INSERT INTO pages (score_id, page_index, image_filename, turn_seconds) VALUES (%s, %s, %s, %s)",
+                        (score_id, idx, fn, ts),
+                    )
+                cur.execute(
+                    "UPDATE scores SET name = %s, mode = %s, audio_filename = %s WHERE id = %s",
+                    (name, mode, audio_filename, score_id),
+                )
+    except Exception as e:
+        for k in new_uploaded_keys:  # rollback freshly-uploaded images
             try:
-                os.remove(os.path.join(score_dir, fn))
-            except OSError:
+                get_s3().delete_object(Bucket=B2_BUCKET, Key=k)
+            except Exception:
                 pass
+        return JSONResponse(status_code=400, content={"detail": f"更新失败: {e}"})
+
+    # After successful commit: purge removed image objects (best-effort)
+    kept = {fn for fn, _ in final_pages}
+    for fn in existing_files - kept:
         try:
-            os.rmdir(score_dir)
-        except OSError:
+            get_s3().delete_object(Bucket=B2_BUCKET, Key=_score_key(score_id, fn))
+        except Exception:
             pass
-    return {"ok": True}
+    if audio_action == "remove" and row["audio_filename"]:
+        try:
+            get_s3().delete_object(Bucket=B2_BUCKET, Key=_score_key(score_id, "audio.mp3"))
+        except Exception:
+            pass
+    return {"ok": True, "id": score_id}
 
 
 # ----------------------------------------------------------------------------
-# Media serving with HTTP Range support (needed for audio seeking)
+# Media redirect (backward-compat): 302 -> presigned B2 URL
 # ----------------------------------------------------------------------------
-RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
-
-
 @app.get("/api/media/{score_id}/{filename}")
-async def serve_media(score_id: int, filename: str, request: Request):
-    # Prevent path traversal
+async def serve_media(score_id: int, filename: str):
     if "/" in filename or ".." in filename:
         return Response(status_code=400)
-    full = os.path.join(UPLOAD_DIR, str(score_id), filename)
-    if not os.path.isfile(full):
-        return Response(status_code=404, content="Not Found")
-
-    file_size = os.path.getsize(full)
-    ctype, _ = mimetypes.guess_type(full)
-    ctype = ctype or "application/octet-stream"
-
-    range_header = request.headers.get("range")
-    if not range_header:
-        return FileResponse(full, media_type=ctype)
-
-    m = RANGE_RE.match(range_header)
-    if not m:
-        return FileResponse(full, media_type=ctype)
-
-    start_s, end_s = m.group(1), m.group(2)
-    start = int(start_s) if start_s else 0
-    end = int(end_s) if end_s else file_size - 1
-    if start > end or start >= file_size:
-        return Response(
-            status_code=416, headers={"Content-Range": f"bytes */{file_size}"}
-        )
-    end = min(end, file_size - 1)
-    length = end - start + 1
-
-    def iterfile():
-        with open(full, "rb") as f:
-            f.seek(start)
-            remaining = length
-            chunk = 64 * 1024
-            while remaining > 0:
-                data = f.read(min(chunk, remaining))
-                if not data:
-                    break
-                remaining -= len(data)
-                yield data
-
-    headers = {
-        "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(length),
-        "Content-Type": ctype,
-    }
-    return StreamingResponse(iterfile(), status_code=206, headers=headers)
+    url = b2_presigned_url(_score_key(score_id, filename))
+    return RedirectResponse(url=url, status_code=302)
 
 
 # Initialise database on import
-init_db()
+try:
+    init_db()
+except Exception as _e:
+    # Defer failures to first request so the process can still boot for /ping.
+    print(f"[init_db] warning: {_e}")
 
 
 # ---------------------------DO NOT EDIT CODE BELOW THIS LINE---------------------------------

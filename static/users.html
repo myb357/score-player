@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>用户管理</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr 160px auto; gap: 12px; align-items: end; }
+    .form-grid .cell label { display:block; font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+    select {
+      width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border);
+      background: var(--bg-2); color: var(--text); font-size: 15px; outline: none; transition: .15s;
+    }
+    select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,92,255,.18); }
+    .user-row {
+      display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--border);
+      border-radius: 12px; background: var(--bg-2); flex-wrap: wrap;
+    }
+    .user-row .u-name { font-size: 15px; font-weight: 700; min-width: 120px; }
+    .user-row .u-time { font-size: 12.5px; color: var(--muted); }
+    .user-row .u-spacer { flex: 1 1 auto; }
+    .users-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+    @media (max-width: 640px) {
+      .form-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="logo">🎼</span> 用户管理</div>
+    <div class="topbar-actions">
+      <a class="btn btn-ghost" href="/">返回主页</a>
+    </div>
+  </div>
+
+  <div class="container stack">
+    <!-- 新建用户 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">新建用户</div>
+      <div class="form-grid">
+        <div class="cell">
+          <label for="nu">用户名</label>
+          <input type="text" id="nu" placeholder="请输入用户名" maxlength="60" />
+        </div>
+        <div class="cell">
+          <label for="np">密码</label>
+          <input type="password" id="np" placeholder="至少 6 位" autocomplete="new-password" />
+        </div>
+        <div class="cell">
+          <label for="nr">角色</label>
+          <select id="nr">
+            <option value="user">普通用户</option>
+            <option value="superadmin">超级管理员</option>
+          </select>
+        </div>
+        <div class="cell">
+          <button class="btn btn-primary" id="createBtn">创建用户</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 用户列表 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">全部用户</div>
+      <div class="users-list" id="usersList">
+        <div class="empty"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script>
+    function toast(msg, type) {
+      const w = document.getElementById('toasts');
+      const t = document.createElement('div');
+      t.className = 'toast ' + (type || '');
+      t.textContent = msg;
+      w.appendChild(t);
+      setTimeout(() => t.remove(), 2600);
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function roleLabel(r) { return r === 'superadmin' ? '超级管理员' : '普通用户'; }
+
+    async function guard() {
+      try {
+        const res = await fetch('/api/session');
+        if (res.status === 401) { window.location.href = '/login'; return false; }
+        const data = await res.json();
+        if (data.role !== 'superadmin') { window.location.href = '/'; return false; }
+        return true;
+      } catch (e) {
+        window.location.href = '/';
+        return false;
+      }
+    }
+
+    async function loadUsers() {
+      const list = document.getElementById('usersList');
+      try {
+        const res = await fetch('/api/users');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (res.status === 403) { window.location.href = '/'; return; }
+        const data = await res.json();
+        const users = data.users || [];
+        if (users.length === 0) {
+          list.innerHTML = '<div class="empty">暂无用户</div>';
+          return;
+        }
+        list.innerHTML = '';
+        users.forEach(u => {
+          const row = document.createElement('div');
+          row.className = 'user-row';
+          const badgeClass = u.role === 'superadmin' ? 'badge accent' : 'badge';
+          row.innerHTML = `
+            <div class="u-name">${escapeHtml(u.username)}</div>
+            <span class="${badgeClass}">${roleLabel(u.role)}</span>
+            <div class="u-time">创建于 ${u.created_at_text}</div>
+            <div class="u-spacer"></div>
+            <button class="btn btn-sm" data-reset="${u.id}">重置密码</button>
+            <button class="btn btn-danger btn-sm" data-del="${u.id}">删除</button>`;
+          row.querySelector('[data-reset]').addEventListener('click', async () => {
+            const np = prompt('为用户「' + u.username + '」设置新密码（至少 6 位）：');
+            if (np === null) return;
+            if (np.length < 6) { toast('新密码至少 6 位', 'err'); return; }
+            const r = await fetch('/api/users/' + u.id + '/password', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ new_password: np }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok) { toast('密码已重置', 'ok'); }
+            else toast(d.detail || '重置失败', 'err');
+          });
+          row.querySelector('[data-del]').addEventListener('click', async () => {
+            if (!confirm('确定删除用户「' + u.username + '」？其名下谱子也会被删除，此操作不可撤销')) return;
+            const r = await fetch('/api/users/' + u.id, { method: 'DELETE' });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok) { toast('已删除', 'ok'); loadUsers(); }
+            else toast(d.detail || '删除失败', 'err');
+          });
+          list.appendChild(row);
+        });
+      } catch (e) {
+        list.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
+      }
+    }
+
+    document.getElementById('createBtn').addEventListener('click', async () => {
+      const username = document.getElementById('nu').value.trim();
+      const password = document.getElementById('np').value;
+      const role = document.getElementById('nr').value;
+      if (!username) { toast('请填写用户名', 'err'); return; }
+      if (password.length < 6) { toast('密码至少 6 位', 'err'); return; }
+      const btn = document.getElementById('createBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, role }),
+        });
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          toast('用户已创建', 'ok');
+          document.getElementById('nu').value = '';
+          document.getElementById('np').value = '';
+          document.getElementById('nr').value = 'user';
+          loadUsers();
+        } else {
+          toast(data.detail || '创建失败', 'err');
+        }
+      } catch (e) {
+        toast('网络错误，请重试', 'err');
+      }
+      btn.disabled = false;
+    });
+
+    (async () => {
+      if (await guard()) loadUsers();
+    })();
+  </script>
+</body>
+</html>

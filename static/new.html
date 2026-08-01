@@ -8,7 +8,7 @@
 </head>
 <body>
   <div class="topbar">
-    <div class="brand"><span class="logo">🎼</span> 新建谱子</div>
+    <div class="brand"><span class="logo">🎼</span> <span id="brandText">新建谱子</span></div>
     <div class="topbar-actions">
       <a class="btn btn-ghost" href="/">返回主页</a>
     </div>
@@ -51,32 +51,56 @@
     <!-- 伴奏上传 -->
     <div class="panel" style="padding:20px;">
       <div class="section-title">伴奏（音频或视频）</div>
-      <div class="hint" style="margin-bottom:10px;">支持音频（mp3/wav/m4a…）与视频（mp4/mov…）。上传视频将自动提取音轨作为伴奏。</div>
-      <div class="dropzone" id="mediaDrop">
-        <div class="dz-icon">🎧</div>
-        <div id="mediaDropText">点击或拖拽音频 / 视频文件到此处</div>
-      </div>
-      <input type="file" id="mediaInput" accept="audio/*,video/*" hidden />
 
-      <div class="media-box" id="mediaBox" style="display:none;">
-        <video id="mediaPreview" class="media-preview" controls style="max-height:220px;"></video>
-        <label class="chk" style="margin-top:12px;">
-          <input type="checkbox" id="trimEnable" />
-          裁剪伴奏片段（截取起止时间之间作为最终伴奏）
-        </label>
-        <div id="trimUI" style="display:none;">
-          <div class="trim-row">
-            <div class="trim-slider" id="trimSlider">
-              <div class="trim-track"></div>
-              <div class="trim-range" id="trimRange"></div>
-              <input type="range" id="trimStart" min="0" max="100" step="0.1" value="0" />
-              <input type="range" id="trimEnd" min="0" max="100" step="0.1" value="100" />
-            </div>
+      <!-- 编辑模式：已有伴奏处理选择 -->
+      <div id="audioChoice" style="display:none;">
+        <div class="hint" style="margin-bottom:10px;">该谱子已有伴奏，请选择如何处理：</div>
+        <audio id="existingAudio" class="media-preview" controls style="display:none;"></audio>
+        <div class="radio-group" id="audioActionGroup" style="margin-top:12px;">
+          <div class="radio-card active" data-action="keep">
+            <h4>保留</h4>
+            <p>继续使用现有伴奏。</p>
           </div>
-          <div class="trim-row">
-            <div>起始 A：<b id="trimStartLabel" style="color:var(--accent-2)">0:00</b></div>
-            <div>结束 B：<b id="trimEndLabel" style="color:var(--accent-2)">0:00</b></div>
-            <button class="btn btn-sm" id="previewSeg" type="button">▶ 试听选段</button>
+          <div class="radio-card" data-action="replace">
+            <h4>替换</h4>
+            <p>上传新的音频 / 视频替换现有伴奏。</p>
+          </div>
+          <div class="radio-card" data-action="remove">
+            <h4>移除</h4>
+            <p>删除伴奏（跟伴奏模式需保留伴奏）。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 上传区（新建模式，或编辑模式选择替换/无伴奏时） -->
+      <div id="uploadArea">
+        <div class="hint" style="margin:10px 0;">支持音频（mp3/wav/m4a…）与视频（mp4/mov…）。上传视频将自动提取音轨作为伴奏。</div>
+        <div class="dropzone" id="mediaDrop">
+          <div class="dz-icon">🎧</div>
+          <div id="mediaDropText">点击或拖拽音频 / 视频文件到此处</div>
+        </div>
+        <input type="file" id="mediaInput" accept="audio/*,video/*" hidden />
+
+        <div class="media-box" id="mediaBox" style="display:none;">
+          <video id="mediaPreview" class="media-preview" controls style="max-height:220px;"></video>
+          <label class="chk" style="margin-top:12px;">
+            <input type="checkbox" id="trimEnable" />
+            裁剪伴奏片段（截取起止时间之间作为最终伴奏）
+          </label>
+          <div id="trimUI" style="display:none;">
+            <div class="trim-row">
+              <div class="trim-slider" id="trimSlider">
+                <div class="trim-track"></div>
+                <div class="trim-range" id="trimRange"></div>
+                <input type="range" id="trimStart" min="0" max="100" step="0.1" value="0" />
+                <input type="range" id="trimEnd" min="0" max="100" step="0.1" value="100" />
+              </div>
+            </div>
+            <div class="trim-row">
+              <div>起始 A：<b id="trimStartLabel" style="color:var(--accent-2)">0:00</b></div>
+              <div>结束 B：<b id="trimEndLabel" style="color:var(--accent-2)">0:00</b></div>
+              <button class="btn btn-sm" id="previewSeg" type="button">▶ 试听选段</button>
+            </div>
           </div>
         </div>
       </div>
@@ -91,6 +115,10 @@
   <div class="toast-wrap" id="toasts"></div>
 
   <script>
+    // ---------- edit mode detection ----------
+    const editId = new URLSearchParams(location.search).get('edit');
+    const isEdit = !!editId;
+
     // ---------- toast ----------
     function toast(msg, type) {
       const w = document.getElementById('toasts');
@@ -117,9 +145,17 @@
         updateTurnLabels();
       });
     });
+    function setMode(mode) {
+      currentMode = mode;
+      document.querySelectorAll('#modeGroup .radio-card').forEach(c => {
+        c.classList.toggle('active', c.dataset.mode === mode);
+      });
+      updateTurnLabels();
+    }
 
-    // ---------- images ----------
-    let pages = []; // {file, url, id}
+    // ---------- images / pages ----------
+    // page model: { id, turn, kind:'existing'|'new', file?, url, filename?, name }
+    let pages = [];
     let uid = 0;
     const imgDrop = document.getElementById('imgDrop');
     const imgInput = document.getElementById('imgInput');
@@ -134,7 +170,7 @@
     function addImages(fileList) {
       for (const f of fileList) {
         if (!f.type.startsWith('image/')) continue;
-        pages.push({ file: f, url: URL.createObjectURL(f), id: ++uid, turn: '' });
+        pages.push({ id: ++uid, turn: '', kind: 'new', file: f, url: URL.createObjectURL(f), name: f.name });
       }
       renderPages();
     }
@@ -152,25 +188,23 @@
         item.className = 'page-item';
         item.draggable = true;
         item.dataset.id = p.id;
+        const tag = p.kind === 'existing' ? '<span class="badge" style="margin-left:6px;">已上传</span>' : '';
         item.innerHTML = `
           <div class="drag-handle" title="拖动排序">⠿</div>
           <div class="pi-idx">${idx + 1}</div>
           <img src="${p.url}" alt="page" />
           <div class="pi-body">
-            <div class="pi-name">${escapeHtml(p.file.name)}</div>
+            <div class="pi-name">${escapeHtml(p.name || '')}${tag}</div>
             <div class="pi-turn">
               <label>${currentMode === 'audio' ? '伴奏第几秒翻页' : '本页停留秒数'}</label>
               <input type="number" min="0" step="0.1" value="${p.turn}" placeholder="秒" />
             </div>
           </div>
           <button class="btn btn-danger btn-sm" data-del="${p.id}">移除</button>`;
-        // turn input
         item.querySelector('input').addEventListener('input', e => { p.turn = e.target.value; });
-        // remove
         item.querySelector('[data-del]').addEventListener('click', () => {
           pages = pages.filter(x => x.id !== p.id); renderPages();
         });
-        // drag reorder (desktop)
         item.addEventListener('dragstart', e => { item.classList.add('dragging'); e.dataTransfer.setData('text/plain', p.id); });
         item.addEventListener('dragend', () => item.classList.remove('dragging'));
         item.addEventListener('dragover', e => { e.preventDefault(); });
@@ -179,7 +213,6 @@
           const fromId = +e.dataTransfer.getData('text/plain');
           reorder(fromId, p.id);
         });
-        // touch reorder via handle (mobile)
         enableTouchDrag(item, p.id);
         pagesList.appendChild(item);
       });
@@ -195,7 +228,6 @@
       renderPages();
     }
 
-    // basic touch drag: long-press handle then move over items
     function enableTouchDrag(item, id) {
       const handle = item.querySelector('.drag-handle');
       handle.addEventListener('touchstart', e => {
@@ -288,21 +320,147 @@
       mediaPreview.addEventListener('timeupdate', stop);
     });
 
+    // ---------- audio action (edit mode) ----------
+    // 'keep' | 'replace' | 'remove'. In create / edit-without-existing-audio it stays null
+    // and effective action is derived from whether a new file was chosen.
+    let audioAction = null;
+    let hasExistingAudio = false;
+    const uploadArea = document.getElementById('uploadArea');
+    const audioChoice = document.getElementById('audioChoice');
+
+    document.querySelectorAll('#audioActionGroup .radio-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.querySelectorAll('#audioActionGroup .radio-card').forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+        audioAction = card.dataset.action;
+        uploadArea.style.display = (audioAction === 'replace') ? 'block' : 'none';
+      });
+    });
+
+    // ---------- edit prefill ----------
+    async function loadForEdit() {
+      document.title = '编辑谱子';
+      document.getElementById('brandText').textContent = '编辑谱子';
+      document.getElementById('saveBtn').textContent = '保存更新';
+      try {
+        const res = await fetch('/api/scores/' + editId);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (res.status === 403 || res.status === 404) {
+          toast(res.status === 403 ? '无权编辑该谱子' : '谱子不存在', 'err');
+          setTimeout(() => window.location.href = '/', 900);
+          return;
+        }
+        const data = await res.json();
+        document.getElementById('scoreName').value = data.name || '';
+        setMode(data.mode || 'audio');
+        pages = (data.pages || []).map(p => ({
+          id: ++uid, turn: (p.turn_seconds == null ? '' : p.turn_seconds),
+          kind: 'existing', filename: p.filename, url: p.image_url, name: p.filename,
+        }));
+        renderPages();
+
+        if (data.audio_filename && data.audio_url) {
+          hasExistingAudio = true;
+          audioAction = 'keep';
+          audioChoice.style.display = 'block';
+          const ea = document.getElementById('existingAudio');
+          ea.src = data.audio_url;
+          ea.style.display = 'block';
+          uploadArea.style.display = 'none'; // hidden until 替换 chosen
+        } else {
+          hasExistingAudio = false;
+          audioAction = null; // behave like create: file present => replace
+          uploadArea.style.display = 'block';
+        }
+      } catch (e) {
+        toast('加载失败，请重试', 'err');
+        setTimeout(() => window.location.href = '/', 900);
+      }
+    }
+
     // ---------- save ----------
     document.getElementById('saveBtn').addEventListener('click', async () => {
       const name = document.getElementById('scoreName').value.trim();
       if (!name) { toast('请填写谱子名称', 'err'); return; }
       if (pages.length === 0) { toast('请至少上传一张谱页图片', 'err'); return; }
-      if (currentMode === 'audio' && !mediaFile) { toast('跟伴奏模式需要上传音频或视频', 'err'); return; }
+
+      const btn = document.getElementById('saveBtn');
+
+      if (!isEdit) {
+        // ---------- CREATE (unchanged) ----------
+        if (currentMode === 'audio' && !mediaFile) { toast('跟伴奏模式需要上传音频或视频', 'err'); return; }
+        const fd = new FormData();
+        fd.append('name', name);
+        fd.append('mode', currentMode);
+        pages.forEach(p => {
+          fd.append('images', p.file, p.file.name);
+          fd.append('turn_seconds', p.turn === '' ? '0' : p.turn);
+        });
+        if (mediaFile) {
+          fd.append('audio', mediaFile, mediaFile.name);
+          if (trimEnable.checked) {
+            fd.append('trim_start', trimStart.value);
+            fd.append('trim_end', trimEnd.value);
+          }
+        }
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> 处理中…';
+        try {
+          const res = await fetch('/api/scores', { method: 'POST', body: fd });
+          if (res.status === 401) { window.location.href = '/login'; return; }
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            toast('保存成功', 'ok');
+            setTimeout(() => window.location.href = '/player/' + data.id, 600);
+            return;
+          }
+          toast(data.detail || '保存失败', 'err');
+        } catch (e) {
+          toast('网络错误，请重试', 'err');
+        }
+        btn.disabled = false;
+        btn.textContent = '保存谱子';
+        return;
+      }
+
+      // ---------- EDIT ----------
+      // Derive effective audio action.
+      let effAction;
+      if (hasExistingAudio) {
+        effAction = audioAction || 'keep';
+      } else {
+        effAction = mediaFile ? 'replace' : 'keep';
+      }
+      if (effAction === 'replace' && !mediaFile) {
+        toast('已选择替换伴奏，请上传音频或视频文件', 'err');
+        return;
+      }
+      // Determine whether audio will be present after save.
+      let audioPresent;
+      if (effAction === 'keep') audioPresent = hasExistingAudio;
+      else if (effAction === 'remove') audioPresent = false;
+      else audioPresent = true; // replace with a file
+      if (currentMode === 'audio' && !audioPresent) {
+        toast('跟伴奏模式必须保留或提供伴奏', 'err');
+        return;
+      }
+
+      const meta = pages.map(p => (
+        p.kind === 'existing'
+          ? { kind: 'existing', filename: p.filename, turn: p.turn === '' ? 0 : Number(p.turn) }
+          : { kind: 'new', turn: p.turn === '' ? 0 : Number(p.turn) }
+      ));
 
       const fd = new FormData();
       fd.append('name', name);
       fd.append('mode', currentMode);
-      pages.forEach(p => {
+      fd.append('pages_meta', JSON.stringify(meta));
+      // append NEW files only, in the order their 'new' entries appear
+      pages.filter(p => p.kind === 'new').forEach(p => {
         fd.append('images', p.file, p.file.name);
-        fd.append('turn_seconds', p.turn === '' ? '0' : p.turn);
       });
-      if (mediaFile) {
+      fd.append('audio_action', effAction);
+      if (effAction === 'replace') {
         fd.append('audio', mediaFile, mediaFile.name);
         if (trimEnable.checked) {
           fd.append('trim_start', trimStart.value);
@@ -310,16 +468,15 @@
         }
       }
 
-      const btn = document.getElementById('saveBtn');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span> 处理中…';
       try {
-        const res = await fetch('/api/scores', { method: 'POST', body: fd });
+        const res = await fetch('/api/scores/' + editId + '/update', { method: 'POST', body: fd });
         if (res.status === 401) { window.location.href = '/login'; return; }
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           toast('保存成功', 'ok');
-          setTimeout(() => window.location.href = '/player/' + data.id, 600);
+          setTimeout(() => window.location.href = '/player/' + (data.id || editId), 600);
           return;
         }
         toast(data.detail || '保存失败', 'err');
@@ -327,8 +484,11 @@
         toast('网络错误，请重试', 'err');
       }
       btn.disabled = false;
-      btn.textContent = '保存谱子';
+      btn.textContent = '保存更新';
     });
+
+    // ---------- init ----------
+    if (isEdit) loadForEdit();
   </script>
 </body>
 </html>

@@ -1,5 +1,4 @@
-# 注意：此项目基于 Python 3.8 开发，请确保所有依赖包版本与 Python 3.8 兼容
-# Warning: This project is based on Python 3.8, please ensure all package versions are compatible with Python 3.8
+# 注意：Docker 部署基于 python:3.11-slim（见 Dockerfile）
 # Please specify python dependency version for all package in requirements.txt
 uvicorn==0.22.0
 fastapi==0.67.0
@@ -7,3 +6,6 @@ httpx==0.24.1
 python-multipart==0.0.5
 imageio-ffmpeg==0.4.9
 aiofiles==23.2.1
+# 持久化存储：Supabase PostgreSQL + Backblaze B2 (S3 兼容)
+psycopg2-binary==2.9.9
+boto3==1.34.69

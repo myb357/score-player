@@ -14,9 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# 数据目录（SQLite + 上传的图片/音频）。在 Render/Railway 上挂载持久磁盘到该路径即可实现持久化。
-ENV SCORE_DATA_DIR=/data
-RUN mkdir -p /data
+# 临时目录：仅存放 ffmpeg 转码临时文件（数据已外置到 Supabase + Backblaze B2，无需持久磁盘）
+ENV SCORE_DATA_DIR=/tmp/score_app_data
+RUN mkdir -p /tmp/score_app_data
 
 EXPOSE 8000
 

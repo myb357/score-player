@@ -5,11 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>我的谱子</title>
   <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    .modal-overlay { position: fixed; inset: 0; background: rgba(5,6,12,.66); backdrop-filter: blur(4px); z-index: 200; display: grid; place-items: center; padding: 20px; }
+    .modal-card { width: 100%; max-width: 420px; padding: 26px; }
+    .modal-card h2 { margin: 0 0 6px; font-size: 20px; }
+    .modal-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+    .modal-card .form-row { margin-bottom: 14px; }
+    .sc-owner { font-size: 12px; color: var(--muted); margin: -4px 0 10px; position: relative; }
+    .sc-actions { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex; gap: 8px; opacity: 0; }
+    .score-card:hover .sc-actions { opacity: 1; }
+    /* neutralize the standalone absolute positioning of .sc-del from style.css so buttons sit side by side */
+    .score-card .sc-actions .sc-del { position: static; top: auto; right: auto; opacity: 1; }
+  </style>
 </head>
 <body>
   <div class="topbar">
     <div class="brand"><span class="logo">🎼</span> 谱子播放器</div>
     <div class="topbar-actions">
+      <a class="btn btn-ghost" href="/users" id="usersBtn" style="display:none;">用户管理</a>
+      <button class="btn btn-ghost" id="pwdBtn">修改密码</button>
       <a class="btn btn-primary" href="/new">＋ 新建谱子</a>
       <button class="btn btn-ghost" id="logoutBtn">退出登录</button>
     </div>
@@ -21,6 +35,26 @@
     </div>
     <div id="content">
       <div class="empty"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- 修改密码 modal -->
+  <div class="modal-overlay" id="pwdModal" style="display:none;">
+    <div class="panel modal-card">
+      <h2>修改密码</h2>
+      <div class="sub">修改后请使用新密码登录</div>
+      <div class="form-row">
+        <label class="field-label" for="oldPwd">原密码</label>
+        <input type="password" id="oldPwd" autocomplete="current-password" placeholder="请输入原密码" />
+      </div>
+      <div class="form-row">
+        <label class="field-label" for="newPwd">新密码</label>
+        <input type="password" id="newPwd" autocomplete="new-password" placeholder="至少 6 位" />
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-ghost" id="pwdCancel">取消</button>
+        <button class="btn btn-primary" id="pwdSave">确认修改</button>
+      </div>
     </div>
   </div>
 
@@ -41,6 +75,54 @@
       window.location.href = '/login';
     });
 
+    // ---------- session / role ----------
+    let currentRole = 'user';
+    async function loadSession() {
+      try {
+        const res = await fetch('/api/session');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json();
+        currentRole = data.role;
+        if (data.role === 'superadmin') {
+          document.getElementById('usersBtn').style.display = '';
+        }
+      } catch (e) { /* ignore, load() will handle 401 */ }
+    }
+
+    // ---------- change password modal ----------
+    const pwdModal = document.getElementById('pwdModal');
+    function openPwd() {
+      document.getElementById('oldPwd').value = '';
+      document.getElementById('newPwd').value = '';
+      pwdModal.style.display = 'grid';
+    }
+    function closePwd() { pwdModal.style.display = 'none'; }
+    document.getElementById('pwdBtn').addEventListener('click', openPwd);
+    document.getElementById('pwdCancel').addEventListener('click', closePwd);
+    pwdModal.addEventListener('click', e => { if (e.target === pwdModal) closePwd(); });
+    document.getElementById('pwdSave').addEventListener('click', async () => {
+      const oldPwd = document.getElementById('oldPwd').value;
+      const newPwd = document.getElementById('newPwd').value;
+      if (!oldPwd) { toast('请输入原密码', 'err'); return; }
+      if (newPwd.length < 6) { toast('新密码至少 6 位', 'err'); return; }
+      const btn = document.getElementById('pwdSave');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/me/password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ old_password: oldPwd, new_password: newPwd }),
+        });
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) { toast('密码已修改', 'ok'); closePwd(); }
+        else toast(data.detail || '修改失败', 'err');
+      } catch (e) {
+        toast('网络错误，请重试', 'err');
+      }
+      btn.disabled = false;
+    });
+
     function modeLabel(m) { return m === 'audio' ? '跟伴奏时间轴' : '独立倒计时'; }
 
     async function load() {
@@ -50,6 +132,10 @@
         if (res.status === 401) { window.location.href = '/login'; return; }
         const data = await res.json();
         const scores = data.scores || [];
+        if (data.role === 'superadmin') {
+          currentRole = 'superadmin';
+          document.getElementById('usersBtn').style.display = '';
+        }
         if (scores.length === 0) {
           content.innerHTML = `<div class="empty">
             <div class="big">🎵</div>
@@ -62,9 +148,15 @@
         scores.forEach(s => {
           const card = document.createElement('div');
           card.className = 'panel score-card';
+          const ownerHtml = (currentRole === 'superadmin' && s.owner)
+            ? `<div class="sc-owner">创建者：<span class="badge">${escapeHtml(s.owner)}</span></div>` : '';
           card.innerHTML = `
-            <button class="btn btn-danger btn-sm sc-del" data-id="${s.id}">删除</button>
+            <div class="sc-actions">
+              <button class="btn btn-sm sc-edit" data-id="${s.id}">编辑</button>
+              <button class="btn btn-danger btn-sm sc-del" data-id="${s.id}">删除</button>
+            </div>
             <div class="sc-name">${escapeHtml(s.name)}</div>
+            ${ownerHtml}
             <div class="sc-meta">
               <span class="badge accent">${modeLabel(s.mode)}</span>
               <span class="badge">${s.page_count} 页</span>
@@ -72,8 +164,12 @@
             </div>
             <div class="sc-time">创建于 ${s.created_at_text}</div>`;
           card.addEventListener('click', (e) => {
-            if (e.target.classList.contains('sc-del')) return;
+            if (e.target.closest('.sc-actions')) return;
             window.location.href = '/player/' + s.id;
+          });
+          card.querySelector('.sc-edit').addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.location.href = '/new?edit=' + s.id;
           });
           card.querySelector('.sc-del').addEventListener('click', async (e) => {
             e.stopPropagation();
@@ -95,6 +191,7 @@
       return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
+    loadSession();
     load();
   </script>
 </body>
