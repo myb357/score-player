@@ -40,6 +40,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.0.1")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -400,7 +401,7 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-PUBLIC_EXACT = {"/login", "/api/login", "/api", "/api/v1/ping", "/favicon.ico", "/sw.js"}
+PUBLIC_EXACT = {"/login", "/api/login", "/api", "/api/v1/ping", "/api/version", "/favicon.ico", "/sw.js"}
 PUBLIC_PREFIX = ("/assets/", "/static/", "/api/docs", "/api/redoc", "/api/openapi.json")
 
 
@@ -482,6 +483,11 @@ async def service_worker():
         media_type="application/javascript",
         headers={"Service-Worker-Allowed": "/"},
     )
+
+
+@app.get("/api/version")
+async def app_version():
+    return {"version": APP_VERSION, "apk_url": "/download/android"}
 
 
 @app.get("/download/android")
