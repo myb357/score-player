@@ -30,6 +30,7 @@
         <div class="settings-dropdown" id="settingsDropdown" role="menu">
           <a class="settings-item" href="/users" id="usersBtn" role="menuitem" style="display:none;">用户管理</a>
           <button class="settings-item" id="pwdBtn" type="button" role="menuitem">修改密码</button>
+          <a class="settings-item" href="/download/android" id="downloadAndroidBtn" role="menuitem">下载 Android App</a>
           <button class="settings-item" id="clearCacheBtn" type="button" role="menuitem">清除缓存</button>
           <button class="settings-item danger" id="logoutBtn" type="button" role="menuitem">退出登录</button>
         </div>
@@ -99,6 +100,7 @@
       const willOpen = !settingsMenu.classList.contains('open');
       settingsMenu.classList.toggle('open', willOpen);
       settingsBtn.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) updateCacheSizeLabel();
     }
     settingsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -133,6 +135,65 @@
       } catch (e) { /* ignore quota/private mode errors */ }
     }
 
+    const clearCacheBtn = document.getElementById('clearCacheBtn');
+    let cacheSizeRequestId = 0;
+
+    function byteLength(str) {
+      return new Blob([str == null ? '' : String(str)]).size;
+    }
+
+    function formatCacheSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    async function getLocalStorageSize() {
+      let total = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        total += byteLength(key);
+        total += byteLength(localStorage.getItem(key));
+      }
+      return total;
+    }
+
+    async function getCacheApiSize() {
+      if (!('caches' in window)) return 0;
+      let total = 0;
+      const cacheNames = await caches.keys();
+      for (const cacheName of cacheNames) {
+        const cache = await caches.open(cacheName);
+        const requests = await cache.keys();
+        for (const request of requests) {
+          const response = await cache.match(request);
+          if (!response) continue;
+          const contentLength = response.headers.get('Content-Length');
+          const parsedLength = contentLength ? Number(contentLength) : NaN;
+          if (Number.isFinite(parsedLength) && parsedLength >= 0) {
+            total += parsedLength;
+          } else {
+            total += (await response.clone().blob()).size;
+          }
+        }
+      }
+      return total;
+    }
+
+    async function updateCacheSizeLabel() {
+      const requestId = ++cacheSizeRequestId;
+      clearCacheBtn.textContent = '清除缓存 (计算中...)';
+      try {
+        const totalBytes = await getLocalStorageSize() + await getCacheApiSize();
+        if (requestId === cacheSizeRequestId) {
+          clearCacheBtn.textContent = '清除缓存 (' + formatCacheSize(totalBytes) + ')';
+        }
+      } catch (e) {
+        if (requestId === cacheSizeRequestId) clearCacheBtn.textContent = '清除缓存 (计算失败)';
+      }
+    }
+
     async function clearAllLocalCaches() {
       localStorage.removeItem(SCORE_LIST_CACHE_KEY);
       Object.keys(localStorage).forEach(key => {
@@ -145,7 +206,7 @@
       }
     }
 
-    document.getElementById('clearCacheBtn').addEventListener('click', async () => {
+    clearCacheBtn.addEventListener('click', async () => {
       closeSettingsMenu();
       const btn = document.getElementById('clearCacheBtn');
       btn.disabled = true;
