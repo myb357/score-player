@@ -251,9 +251,20 @@
       return base + '_cropped.' + ext;
     }
 
+    async function readFileAsBlob(file) {
+      try {
+        const buf = await file.arrayBuffer();
+        return new Blob([buf], { type: file.type || 'application/octet-stream' });
+      } catch (e) {
+        // 降级：直接返回原 file（Web 环境通常没问题）
+        return file;
+      }
+    }
+
     async function requestAutoCropBox(file) {
       const fd = new FormData();
-      fd.append('image', file, file.name);
+      const blob = await readFileAsBlob(file);
+      fd.append('image', blob, file.name);
       const res = await apiFetch('/api/images/auto-crop', { method: 'POST', body: fd });
       if (res.status === 401) { goLogin(); return null; }
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '自动裁剪接口异常');
@@ -536,12 +547,14 @@
         const fd = new FormData();
         fd.append('name', name);
         fd.append('mode', currentMode);
-        pages.forEach(p => {
-          fd.append('images', p.file, p.file.name);
+        for (const p of pages) {
+          const blob = await readFileAsBlob(p.file);
+          fd.append('images', blob, p.file.name);
           fd.append('turn_seconds', p.turn === '' ? '0' : p.turn);
-        });
+        }
         if (mediaFile) {
-          fd.append('audio', mediaFile, mediaFile.name);
+          const blob = await readFileAsBlob(mediaFile);
+          fd.append('audio', blob, mediaFile.name);
           if (trimEnable.checked) {
             fd.append('trim_start', trimStart.value);
             fd.append('trim_end', trimEnd.value);
@@ -601,12 +614,14 @@
       fd.append('mode', currentMode);
       fd.append('pages_meta', JSON.stringify(meta));
       // append NEW files only, in the order their 'new' entries appear
-      pages.filter(p => p.kind === 'new').forEach(p => {
-        fd.append('images', p.file, p.file.name);
-      });
+      for (const p of pages.filter(p => p.kind === 'new')) {
+        const blob = await readFileAsBlob(p.file);
+        fd.append('images', blob, p.file.name);
+      }
       fd.append('audio_action', effAction);
       if (effAction === 'replace') {
-        fd.append('audio', mediaFile, mediaFile.name);
+        const blob = await readFileAsBlob(mediaFile);
+        fd.append('audio', blob, mediaFile.name);
         if (trimEnable.checked) {
           fd.append('trim_start', trimStart.value);
           fd.append('trim_end', trimEnd.value);
