@@ -33,6 +33,15 @@
       <!-- STAGE -->
       <div class="stage" id="stage">
         <img id="pageImg" alt="谱页" />
+        <div class="seek-preview" id="seekPreview" aria-hidden="true">
+          <div class="seek-preview-head">
+            <span id="seekPreviewLabel">快进</span>
+            <strong id="seekPreviewTime">0:00</strong>
+          </div>
+          <div class="seek-preview-track">
+            <div class="seek-preview-fill" id="seekPreviewFill"></div>
+          </div>
+        </div>
       </div>
 
       <!-- RIGHT: playback -->
@@ -193,23 +202,64 @@
     window.addEventListener('mousemove',e=>{ if(!md)return; tx+=e.clientX-lx; ty+=e.clientY-ly; lx=e.clientX; ly=e.clientY; applyT(); });
     window.addEventListener('mouseup',()=>{md=false;stage.classList.remove('grabbing');});
     stage.addEventListener('dblclick',e=>{e.preventDefault();resetView();});
-    // touch: pinch zoom + single drag + double tap reset
+    // touch: pinch zoom + single drag + double tap reset + horizontal seek
     let startDist=0,startScale=1,startMid=null,startTx=0,startTy=0,panLast=null,lastTap=0;
+    let seekTouch=null;
+    const SEEK_STEP_SECONDS=5;
+    const SEEK_STEP_PIXELS=50;
+    const SEEK_START_THRESHOLD=16;
     const dist=t=>Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
     const mid=t=>({x:(t[0].clientX+t[1].clientX)/2,y:(t[0].clientY+t[1].clientY)/2});
+    const clampTime=t=>Math.min(audio.duration||0,Math.max(0,t));
+    const canSeekAudio=()=>mode==='audio'&&hasAudio()&&isFinite(audio.duration)&&audio.duration>0;
+    function previewSeek(target,label){
+      if(!canSeekAudio())return;
+      target=clampTime(target);
+      $('seekPreviewLabel').textContent=label;
+      $('seekPreviewTime').textContent=fmt(target);
+      $('seekPreviewFill').style.width=(target/audio.duration*100)+'%';
+      $('seekPreview').classList.add('show');
+      $('curTime').textContent=fmt(target);
+      $('played').style.height=(target/audio.duration*100)+'%';
+    }
+    function hideSeekPreview(){ $('seekPreview').classList.remove('show'); }
+    function seekTo(t,label){
+      if(!canSeekAudio())return false;
+      audio.currentTime=clampTime(t);
+      onTimeUpdate();
+      if(label)toast(label+' '+fmt(audio.currentTime),'ok');
+      return true;
+    }
+    function seekBy(delta){
+      const ok=seekTo(audio.currentTime+delta,delta>0?'快进':'快退');
+      if(ok)previewSeek(audio.currentTime,delta>0?'快进':'快退');
+      setTimeout(hideSeekPreview,500);
+      return ok;
+    }
     stage.addEventListener('touchstart',e=>{
       if(viewMode==='scroll')return;
+      seekTouch=null;
       if(e.touches.length===2){ startDist=dist(e.touches); startScale=scale; startMid=mid(e.touches); startTx=tx; startTy=ty; panLast=null; }
-      else if(e.touches.length===1){ panLast={x:e.touches[0].clientX,y:e.touches[0].clientY};
-        const now=Date.now(); if(now-lastTap<300){ resetView(); } lastTap=now; }
+      else if(e.touches.length===1){ const t=e.touches[0]; panLast={x:t.clientX,y:t.clientY};
+        seekTouch=canSeekAudio()&&scale<=1?{startX:t.clientX,startY:t.clientY,base:audio.currentTime,target:audio.currentTime,active:false}:null;
+        const now=Date.now(); if(now-lastTap<300){ resetView(); seekTouch=null; } lastTap=now; }
     },{passive:false});
     stage.addEventListener('touchmove',e=>{
       if(viewMode==='scroll')return;
-      if(e.touches.length===2){ e.preventDefault(); const d=dist(e.touches); scale=clampS(startScale*(d/startDist));
+      if(e.touches.length===2){ e.preventDefault(); seekTouch=null; const d=dist(e.touches); scale=clampS(startScale*(d/startDist));
         const m=mid(e.touches); tx=startTx+(m.x-startMid.x); ty=startTy+(m.y-startMid.y); if(scale===1){tx=0;ty=0;} applyT(); }
-      else if(e.touches.length===1 && panLast && scale>1){ e.preventDefault(); const t=e.touches[0];
+      else if(e.touches.length===1 && panLast && scale>1){ e.preventDefault(); seekTouch=null; const t=e.touches[0];
         tx+=t.clientX-panLast.x; ty+=t.clientY-panLast.y; panLast={x:t.clientX,y:t.clientY}; applyT(); }
+      else if(e.touches.length===1 && seekTouch){ const t=e.touches[0], dx=t.clientX-seekTouch.startX, dy=t.clientY-seekTouch.startY;
+        if(!seekTouch.active && Math.abs(dx)>SEEK_START_THRESHOLD && Math.abs(dx)>Math.abs(dy)*1.4)seekTouch.active=true;
+        if(seekTouch.active){ e.preventDefault(); const delta=dx/SEEK_STEP_PIXELS*SEEK_STEP_SECONDS; seekTouch.target=clampTime(seekTouch.base+delta); previewSeek(seekTouch.target,delta>=0?'快进':'快退'); }
+      }
     },{passive:false});
+    stage.addEventListener('touchend',()=>{
+      if(seekTouch&&seekTouch.active)seekTo(seekTouch.target,seekTouch.target>=seekTouch.base?'快进':'快退');
+      seekTouch=null; hideSeekPreview();
+    },{passive:false});
+    stage.addEventListener('touchcancel',()=>{seekTouch=null;hideSeekPreview();},{passive:false});
 
     // ---------- paging ----------
     function pageStart(i){return i<=0?0:(flipAway[i-1]||0);}
@@ -297,7 +347,15 @@
       $('setB').addEventListener('click',()=>{ if(!hasAudio())return; const t=audio.currentTime; if(loopA==null){toast('请先设A','err');return;} if(t<=loopA){toast('B需晚于A','err');return;} loopB=t; $('setB').classList.add('active'); refreshAB(); toast('终点B '+fmt(loopB),'ok'); });
       $('clearAB').addEventListener('click',()=>{ loopA=loopB=null; $('setA').classList.remove('active'); $('setB').classList.remove('active'); refreshAB(); toast('已取消循环','ok'); });
       ['mousemove','touchstart','click','keydown','wheel'].forEach(ev=>document.addEventListener(ev,onActivity,{passive:true}));
-      document.addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();togglePlay();} else if(e.code==='ArrowRight')nextPage(true); else if(e.code==='ArrowLeft')prevPage(true); else if(e.key==='f'||e.key==='F')toggleFs(); else if(e.key==='0')resetView(); });
+      document.addEventListener('keydown',e=>{
+        const tag=(document.activeElement&&document.activeElement.tagName||'').toLowerCase();
+        if(['input','textarea','select'].includes(tag))return;
+        if(e.code==='Space'){e.preventDefault();togglePlay();}
+        else if(e.code==='ArrowRight'){e.preventDefault(); if(!seekBy(SEEK_STEP_SECONDS))nextPage(true);}
+        else if(e.code==='ArrowLeft'){e.preventDefault(); if(!seekBy(-SEEK_STEP_SECONDS))prevPage(true);}
+        else if(e.key==='f'||e.key==='F')toggleFs();
+        else if(e.key==='0')resetView();
+      });
     }
 
     init();
