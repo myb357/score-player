@@ -22,12 +22,17 @@
   <div class="topbar">
     <div class="brand"><span class="logo">🎼</span> 谱子播放器</div>
     <div class="topbar-actions">
-      <a class="btn btn-ghost" href="/users" id="usersBtn" style="display:none;">用户管理</a>
-      <button class="btn btn-ghost" id="pwdBtn">修改密码</button>
       <button class="btn btn-ghost" id="importBtn">导入谱子</button>
       <input type="file" id="importInput" accept=".zip,application/zip" hidden />
       <a class="btn btn-primary" href="/new">＋ 新建谱子</a>
-      <button class="btn btn-ghost" id="logoutBtn">退出登录</button>
+      <div class="settings-menu" id="settingsMenu">
+        <button class="btn btn-ghost btn-icon settings-toggle" id="settingsBtn" type="button" aria-label="设置" aria-haspopup="true" aria-expanded="false">⚙</button>
+        <div class="settings-dropdown" id="settingsDropdown" role="menu">
+          <a class="settings-item" href="/users" id="usersBtn" role="menuitem" style="display:none;">用户管理</a>
+          <button class="settings-item" id="pwdBtn" type="button" role="menuitem">修改密码</button>
+          <button class="settings-item danger" id="logoutBtn" type="button" role="menuitem">退出登录</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -72,7 +77,30 @@
       setTimeout(() => t.remove(), 2600);
     }
 
+    const settingsMenu = document.getElementById('settingsMenu');
+    const settingsBtn = document.getElementById('settingsBtn');
+    function closeSettingsMenu() {
+      settingsMenu.classList.remove('open');
+      settingsBtn.setAttribute('aria-expanded', 'false');
+    }
+    function toggleSettingsMenu() {
+      const willOpen = !settingsMenu.classList.contains('open');
+      settingsMenu.classList.toggle('open', willOpen);
+      settingsBtn.setAttribute('aria-expanded', String(willOpen));
+    }
+    settingsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSettingsMenu();
+    });
+    document.addEventListener('click', (e) => {
+      if (!settingsMenu.contains(e.target)) closeSettingsMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeSettingsMenu();
+    });
+
     document.getElementById('logoutBtn').addEventListener('click', async () => {
+      closeSettingsMenu();
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/login';
     });
@@ -128,7 +156,10 @@
       pwdModal.style.display = 'grid';
     }
     function closePwd() { pwdModal.style.display = 'none'; }
-    document.getElementById('pwdBtn').addEventListener('click', openPwd);
+    document.getElementById('pwdBtn').addEventListener('click', () => {
+      closeSettingsMenu();
+      openPwd();
+    });
     document.getElementById('pwdCancel').addEventListener('click', closePwd);
     pwdModal.addEventListener('click', e => { if (e.target === pwdModal) closePwd(); });
     document.getElementById('pwdSave').addEventListener('click', async () => {
