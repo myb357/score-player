@@ -531,6 +531,7 @@ async def app_version():
     return {"version": APP_VERSION, "apk_url": "https://score-player.onrender.com/download/android"}
 
 
+@app.head("/download/android")
 @app.get("/download/android")
 async def download_android_app():
     if not os.path.isfile(ANDROID_APK_PATH):
