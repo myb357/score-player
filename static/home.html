@@ -30,6 +30,7 @@
         <div class="settings-dropdown" id="settingsDropdown" role="menu">
           <a class="settings-item" href="/users" id="usersBtn" role="menuitem" style="display:none;">用户管理</a>
           <button class="settings-item" id="pwdBtn" type="button" role="menuitem">修改密码</button>
+          <button class="settings-item" id="clearCacheBtn" type="button" role="menuitem">清除缓存</button>
           <button class="settings-item danger" id="logoutBtn" type="button" role="menuitem">退出登录</button>
         </div>
       </div>
@@ -108,6 +109,55 @@
     });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') closeSettingsMenu();
+    });
+
+    const SCORE_LIST_CACHE_KEY = 'score-player:score-list-cache';
+    const SCORE_LIST_CACHE_TTL = 60 * 60 * 1000;
+    const SCORE_CACHE_NAME = 'score-player-score-assets-v1';
+
+    function readScoreListCache() {
+      try {
+        const cached = JSON.parse(localStorage.getItem(SCORE_LIST_CACHE_KEY) || 'null');
+        if (!cached || !Array.isArray(cached.scores) || Date.now() - cached.cachedAt > SCORE_LIST_CACHE_TTL) return null;
+        return cached;
+      } catch (e) { return null; }
+    }
+
+    function writeScoreListCache(data) {
+      try {
+        localStorage.setItem(SCORE_LIST_CACHE_KEY, JSON.stringify({
+          cachedAt: Date.now(),
+          scores: data.scores || [],
+          role: data.role || currentRole,
+        }));
+      } catch (e) { /* ignore quota/private mode errors */ }
+    }
+
+    async function clearAllLocalCaches() {
+      localStorage.removeItem(SCORE_LIST_CACHE_KEY);
+      Object.keys(localStorage).forEach(key => {
+        if (key.indexOf('score-player:score-detail:') === 0 || key.indexOf('score-player:view-mode:') === 0) {
+          localStorage.removeItem(key);
+        }
+      });
+      if ('caches' in window) {
+        await caches.delete(SCORE_CACHE_NAME);
+      }
+    }
+
+    document.getElementById('clearCacheBtn').addEventListener('click', async () => {
+      closeSettingsMenu();
+      const btn = document.getElementById('clearCacheBtn');
+      btn.disabled = true;
+      try {
+        await clearAllLocalCaches();
+        toast('本地缓存已清除', 'ok');
+        await load({ skipCache: true });
+      } catch (e) {
+        toast('清除缓存失败，请重试', 'err');
+      } finally {
+        btn.disabled = false;
+      }
     });
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {
@@ -380,7 +430,16 @@
           e.stopPropagation();
           if (!confirm('确定删除《' + s.name + '》？此操作不可撤销')) return;
           const r = await fetch('/api/scores/' + id, { method: 'DELETE' });
-          if (r.ok) { toast('已删除', 'ok'); load(); }
+          if (r.ok) {
+            localStorage.removeItem(SCORE_LIST_CACHE_KEY);
+            if ('caches' in window) {
+              const cache = await caches.open(SCORE_CACHE_NAME);
+              await cache.delete('/api/scores/' + id);
+            }
+            localStorage.removeItem('score-player:score-detail:' + id);
+            toast('已删除', 'ok');
+            load({ skipCache: true });
+          }
           else toast('删除失败', 'err');
         });
         grid.appendChild(card);
@@ -390,12 +449,23 @@
       updateBatchUI();
     }
 
-    async function load() {
+    async function load(options) {
       const content = document.getElementById('content');
+      const opts = options || {};
+      const cached = opts.skipCache ? null : readScoreListCache();
+      if (cached) {
+        scoreList = cached.scores;
+        if (cached.role === 'superadmin') {
+          currentRole = 'superadmin';
+          document.getElementById('usersBtn').style.display = '';
+        }
+        renderScores();
+      }
       try {
-        const res = await fetch('/api/scores');
+        const res = await fetch('/api/scores', { cache: 'no-store' });
         if (res.status === 401) { window.location.href = '/login'; return; }
         const data = await res.json();
+        writeScoreListCache(data);
         scoreList = data.scores || [];
         selectedScores.forEach(id => {
           if (!scoreList.some(s => Number(s.id) === id)) selectedScores.delete(id);
@@ -406,7 +476,8 @@
         }
         renderScores();
       } catch (e) {
-        content.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
+        if (!cached) content.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
+        else toast('已显示缓存，后台更新失败', 'err');
       }
     }
 

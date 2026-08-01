@@ -80,6 +80,54 @@
     let viewMode='contain';
     const audio=$('audio'), stage=$('stage'), img=$('pageImg');
     const hasAudio=()=>!!(score&&score.audio_url);
+    const SCORE_CACHE_NAME='score-player-score-assets-v1';
+    const detailCacheKey=()=>`score-player:score-detail:${scoreId}`;
+    const versionOf=s=>(s&&(s.updated_at||s.updated_at_text||s.modified_at||s.created_at_text||s.name))||'';
+
+    function readCachedScore(){
+      try{return JSON.parse(localStorage.getItem(detailCacheKey())||'null');}
+      catch(e){return null;}
+    }
+    function writeCachedScore(data){
+      try{localStorage.setItem(detailCacheKey(),JSON.stringify({score:data,version:versionOf(data),cachedAt:Date.now()}));}
+      catch(e){/* ignore quota/private mode errors */}
+    }
+    async function openAssetCache(){return 'caches' in window?caches.open(SCORE_CACHE_NAME):null;}
+    async function cachedAssetUrl(url){
+      if(!url)return '';
+      const cache=await openAssetCache();
+      if(!cache)return url;
+      const cached=await cache.match(url);
+      if(cached)return URL.createObjectURL(await cached.blob());
+      return url;
+    }
+    async function refreshAsset(url){
+      const cache=await openAssetCache();
+      if(!cache||!url)return;
+      try{
+        const res=await fetch(url,{cache:'no-store'});
+        if(res.ok)await cache.put(url,res.clone());
+      }catch(e){/* keep existing cache */}
+    }
+    async function cacheScoreAssets(data){
+      const tasks=(data.pages||[]).map(p=>refreshAsset(p.image_url));
+      if(data.audio_url)tasks.push(refreshAsset(data.audio_url));
+      await Promise.allSettled(tasks);
+    }
+    let controlsBound=false;
+    async function applyScore(data){
+      score=data; pages=score.pages||[]; mode=score.mode; $('title').textContent=score.name;
+      flipAway=pages.map(p=>p.turn_seconds||0);
+      await Promise.all(pages.map(async p=>{p.cached_image_url=await cachedAssetUrl(p.image_url);}));
+      if(hasAudio()){
+        audio.src=await cachedAssetUrl(score.audio_url);
+        audio.onloadedmetadata=()=>{$('durTime').textContent=fmt(audio.duration);};
+        audio.ontimeupdate=onTimeUpdate;
+        audio.onended=()=>{playing=false;updatePlayBtn();showBars();};
+      }else{ $('progressWrap').style.display='none'; $('abGroup').style.display='none'; $('speedGroup').style.display='none'; }
+      if(mode==='countdown') $('cdPill').style.display='block';
+      loadViewMode(); setPage(0); if(!controlsBound){bindControls(); controlsBound=true;} updatePlayBtn();
+    }
     const viewModeKey=()=>`score-player:view-mode:${scoreId}`;
     function loadViewMode(){
       const saved=localStorage.getItem(viewModeKey());
@@ -103,23 +151,27 @@
     }
 
     async function init(){
+      const cached=readCachedScore();
+      if(cached&&cached.score){
+        await applyScore(cached.score);
+      }
       try{
-        const res=await fetch('/api/scores/'+scoreId);
+        const res=await fetch('/api/scores/'+scoreId,{cache:'no-store'});
         if(res.status===401){location.href='/login';return;}
         if(!res.ok){toast('谱子不存在','err');setTimeout(()=>location.href='/',1200);return;}
-        score=await res.json();
-      }catch(e){toast('加载失败','err');return;}
-      pages=score.pages||[]; mode=score.mode; $('title').textContent=score.name;
-      flipAway=pages.map(p=>p.turn_seconds||0);
-      pages.forEach(p=>{const im=new Image();im.src=p.image_url;});
-      if(hasAudio()){
-        audio.src=score.audio_url;
-        audio.addEventListener('loadedmetadata',()=>{$('durTime').textContent=fmt(audio.duration);});
-        audio.addEventListener('timeupdate',onTimeUpdate);
-        audio.addEventListener('ended',()=>{playing=false;updatePlayBtn();showBars();});
-      }else{ $('progressWrap').style.display='none'; $('abGroup').style.display='none'; $('speedGroup').style.display='none'; }
-      if(mode==='countdown') $('cdPill').style.display='block';
-      loadViewMode(); setPage(0); bindControls(); updatePlayBtn();
+        const fresh=await res.json();
+        const hasUpdate=!cached||cached.version!==versionOf(fresh);
+        writeCachedScore(fresh);
+        if(!cached||hasUpdate){
+          await cacheScoreAssets(fresh);
+          await applyScore(fresh);
+        }else{
+          cacheScoreAssets(fresh);
+        }
+      }catch(e){
+        if(!cached)toast('加载失败','err');
+        else toast('已使用本地缓存，后台更新失败','err');
+      }
     }
 
     // ---------- zoom & pan ----------
@@ -163,7 +215,7 @@
     function pageStart(i){return i<=0?0:(flipAway[i-1]||0);}
     function setPage(i,seek){
       if(i<0)i=0; if(i>pages.length-1)i=pages.length-1; current=i;
-      img.src=pages[i].image_url; $('pageInd').textContent=(i+1)+'/'+pages.length;
+      img.src=pages[i].cached_image_url||pages[i].image_url; $('pageInd').textContent=(i+1)+'/'+pages.length;
       resetView();  // reset zoom/pan per page
       if(mode==='audio'&&hasAudio()&&seek) audio.currentTime=pageStart(i)+0.001;
       if(mode==='countdown') resetCountdown();

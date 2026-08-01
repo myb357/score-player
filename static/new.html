@@ -137,6 +137,17 @@
     // ---------- edit mode detection ----------
     const editId = new URLSearchParams(location.search).get('edit');
     const isEdit = !!editId;
+    const SCORE_LIST_CACHE_KEY = 'score-player:score-list-cache';
+    const SCORE_CACHE_NAME = 'score-player-score-assets-v1';
+    function clearScoreListCache() { localStorage.removeItem(SCORE_LIST_CACHE_KEY); }
+    async function clearScoreCache(id) {
+      if (!id) return;
+      localStorage.removeItem('score-player:score-detail:' + id);
+      if ('caches' in window) {
+        const cache = await caches.open(SCORE_CACHE_NAME);
+        await cache.delete('/api/scores/' + id);
+      }
+    }
 
     // ---------- toast ----------
     function toast(msg, type) {
@@ -513,6 +524,7 @@
           if (res.status === 401) { window.location.href = '/login'; return; }
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
+            clearScoreListCache();
             toast('保存成功', 'ok');
             setTimeout(() => window.location.href = '/player/' + data.id, 600);
             return;
@@ -578,6 +590,8 @@
         if (res.status === 401) { window.location.href = '/login'; return; }
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
+          await clearScoreCache(data.id || editId);
+          clearScoreListCache();
           toast('保存成功', 'ok');
           setTimeout(() => window.location.href = '/player/' + (data.id || editId), 600);
           return;
