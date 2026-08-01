@@ -25,6 +25,7 @@
         <button class="round-btn" id="nextBtn" title="下一页">⏭</button>
         <div class="bar-spacer"></div>
         <button class="round-btn" id="zoomReset" title="还原大小">⤢</button>
+        <button class="round-btn" id="viewModeBtn" title="图片显示模式：适应屏幕" aria-label="切换图片显示模式">⛶</button>
         <button class="round-btn" id="fsBtn" title="全屏">⛶</button>
       </div>
 
@@ -75,8 +76,30 @@
     let score=null, pages=[], mode='audio', current=0, playing=false, flipAway=[];
     let cdRemaining=0, cdTimer=null, cdStartTs=0, cdPillTimer=null;
     let loopA=null, loopB=null;
+    let viewMode='contain';
     const audio=$('audio'), stage=$('stage'), img=$('pageImg');
     const hasAudio=()=>!!(score&&score.audio_url);
+    const viewModeKey=()=>`score-player:view-mode:${scoreId}`;
+    function loadViewMode(){
+      const saved=localStorage.getItem(viewModeKey());
+      viewMode=saved==='scroll'?'scroll':'contain';
+      applyViewMode();
+    }
+    function applyViewMode(){
+      const scrollMode=viewMode==='scroll';
+      stage.classList.toggle('scroll-mode',scrollMode);
+      $('viewModeBtn').classList.toggle('active',scrollMode);
+      $('viewModeBtn').textContent=scrollMode?'🔍':'⛶';
+      $('viewModeBtn').title=scrollMode?'图片显示模式：滚动模式':'图片显示模式：适应屏幕';
+      $('viewModeBtn').setAttribute('aria-pressed',String(scrollMode));
+      resetView();
+    }
+    function toggleViewMode(){
+      viewMode=viewMode==='scroll'?'contain':'scroll';
+      localStorage.setItem(viewModeKey(),viewMode);
+      applyViewMode();
+      toast(viewMode==='scroll'?'已切换为滚动模式':'已切换为适应屏幕','ok');
+    }
 
     async function init(){
       try{
@@ -95,7 +118,7 @@
         audio.addEventListener('ended',()=>{playing=false;updatePlayBtn();showBars();});
       }else{ $('progressWrap').style.display='none'; $('abGroup').style.display='none'; $('speedGroup').style.display='none'; }
       if(mode==='countdown') $('cdPill').style.display='block';
-      setPage(0); bindControls(); updatePlayBtn();
+      loadViewMode(); setPage(0); bindControls(); updatePlayBtn();
     }
 
     // ---------- zoom & pan ----------
@@ -109,11 +132,11 @@
       if(scale===1){tx=0;ty=0;} applyT();
     }
     // PC wheel
-    stage.addEventListener('wheel',e=>{ e.preventDefault(); const r=stage.getBoundingClientRect();
+    stage.addEventListener('wheel',e=>{ if(viewMode==='scroll')return; e.preventDefault(); const r=stage.getBoundingClientRect();
       zoomAt(e.clientX-r.left-r.width/2, e.clientY-r.top-r.height/2, e.deltaY<0?1.12:0.89); },{passive:false});
     // PC drag pan (only when zoomed)
     let md=false,lx=0,ly=0;
-    stage.addEventListener('mousedown',e=>{ if(e.button!==0||scale<=1)return; md=true; lx=e.clientX; ly=e.clientY; stage.classList.add('grabbing'); });
+    stage.addEventListener('mousedown',e=>{ if(viewMode==='scroll'||e.button!==0||scale<=1)return; md=true; lx=e.clientX; ly=e.clientY; stage.classList.add('grabbing'); });
     window.addEventListener('mousemove',e=>{ if(!md)return; tx+=e.clientX-lx; ty+=e.clientY-ly; lx=e.clientX; ly=e.clientY; applyT(); });
     window.addEventListener('mouseup',()=>{md=false;stage.classList.remove('grabbing');});
     stage.addEventListener('dblclick',e=>{e.preventDefault();resetView();});
@@ -122,11 +145,13 @@
     const dist=t=>Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
     const mid=t=>({x:(t[0].clientX+t[1].clientX)/2,y:(t[0].clientY+t[1].clientY)/2});
     stage.addEventListener('touchstart',e=>{
+      if(viewMode==='scroll')return;
       if(e.touches.length===2){ startDist=dist(e.touches); startScale=scale; startMid=mid(e.touches); startTx=tx; startTy=ty; panLast=null; }
       else if(e.touches.length===1){ panLast={x:e.touches[0].clientX,y:e.touches[0].clientY};
         const now=Date.now(); if(now-lastTap<300){ resetView(); } lastTap=now; }
     },{passive:false});
     stage.addEventListener('touchmove',e=>{
+      if(viewMode==='scroll')return;
       if(e.touches.length===2){ e.preventDefault(); const d=dist(e.touches); scale=clampS(startScale*(d/startDist));
         const m=mid(e.touches); tx=startTx+(m.x-startMid.x); ty=startTy+(m.y-startMid.y); if(scale===1){tx=0;ty=0;} applyT(); }
       else if(e.touches.length===1 && panLast && scale>1){ e.preventDefault(); const t=e.touches[0];
@@ -204,6 +229,7 @@
       $('prevBtn').addEventListener('click',()=>prevPage(true));
       $('nextBtn').addEventListener('click',()=>nextPage(true));
       $('fsBtn').addEventListener('click',toggleFs);
+      $('viewModeBtn').addEventListener('click',toggleViewMode);
       $('zoomReset').addEventListener('click',resetView);
       $('speedUp').addEventListener('click',()=>setSpeed(speed+0.1));
       $('speedDown').addEventListener('click',()=>setSpeed(speed-0.1));
