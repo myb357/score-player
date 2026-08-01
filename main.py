@@ -750,6 +750,12 @@ def _media_manifest_name(filename: Optional[str]) -> Optional[str]:
     return "audio/" + _safe_zip_name(filename, "audio.mp3")
 
 
+def _media_url(score_id: int, filename: Optional[str]) -> Optional[str]:
+    if not filename:
+        return None
+    return f"/api/media/{score_id}/{quote(posixpath.basename(filename))}"
+
+
 @app.get("/api/scores/{score_id}/export")
 async def export_score(request: Request, score_id: int):
     me = current_user(request)
@@ -1251,16 +1257,12 @@ async def get_score(request: Request, score_id: int):
         "created_at_text": _fmt_time(row["created_at"]),
         "can_edit": me["role"] == "superadmin" or row["owner_id"] == me["id"],
         "audio_filename": row["audio_filename"],
-        "audio_url": (
-            b2_presigned_url(_score_key(score_id, row["audio_filename"]))
-            if row["audio_filename"]
-            else None
-        ),
+        "audio_url": _media_url(score_id, row["audio_filename"]),
         "pages": [
             {
                 "index": p["page_index"],
                 "filename": p["image_filename"],
-                "image_url": b2_presigned_url(_score_key(score_id, p["image_filename"])),
+                "image_url": _media_url(score_id, p["image_filename"]),
                 "turn_seconds": p["turn_seconds"],
             }
             for p in (pages or [])
