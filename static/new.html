@@ -260,44 +260,49 @@
     }
 
     async function readFileAsBlob(file) {
-      // 优先使用 Android 原生 Bridge 读取 content:// URI 字节
-      // （仅当 file.name 明确是 content:// URI 时才用 Bridge，否则用 FileReader 兜底）
-      if (window.AndroidBridge && file.name && file.name.startsWith('content://')) {
+      // 优先通过 AndroidBridge 读取最后选中的图片（完全绕开 WebView File 系统）
+      if (window.AndroidBridge && typeof window.AndroidBridge.readLastPickedImageAsBase64 === 'function') {
         try {
-          const dataUrl = window.AndroidBridge.readUriAsBase64(file.name);
+          const dataUrl = window.AndroidBridge.readLastPickedImageAsBase64();
           if (dataUrl && dataUrl.startsWith('data:')) {
             const [meta, b64] = dataUrl.split(',');
             const mime = meta.split(':')[1].split(';')[0];
             const binary = atob(b64);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            console.log('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 ok, bytes=' + bytes.length + ', mime=' + mime);
             return new Blob([bytes], { type: mime });
           }
-        } catch (e) { /* fall through */ }
-      }
-      // 先尝试 arrayBuffer()
-      try {
-        const buf = await file.arrayBuffer();
-        if (buf && buf.byteLength > 0) {
-          return new Blob([buf], { type: file.type || 'image/jpeg' });
+        } catch (e) {
+          console.warn('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 failed:', e);
         }
-      } catch (e) { /* fall through */ }
-      // arrayBuffer() 为空或失败，用 FileReader（可读 content:// URI）
+      }
+      // Fallback: FileReader.readAsDataURL（能读 content:// URI，比 arrayBuffer 可靠）
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
           const dataUrl = e.target.result;
-          if (!dataUrl || !dataUrl.includes(',')) { resolve(file); return; }
+          if (!dataUrl || !dataUrl.includes(',')) {
+            console.warn('[readFileAsBlob] FileReader returned empty result, using original file');
+            resolve(file); return;
+          }
           const [meta, b64] = dataUrl.split(',');
           const mime = (meta.split(':')[1] || '').split(';')[0] || file.type || 'image/jpeg';
           try {
             const binary = atob(b64);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            console.log('[readFileAsBlob] FileReader ok, bytes=' + bytes.length + ', mime=' + mime);
             resolve(new Blob([bytes], { type: mime }));
-          } catch (e) { resolve(file); }
+          } catch (e) {
+            console.warn('[readFileAsBlob] atob failed, using original file:', e);
+            resolve(file);
+          }
         };
-        reader.onerror = () => resolve(file);
+        reader.onerror = () => {
+          console.warn('[readFileAsBlob] FileReader.onerror, using original file');
+          resolve(file);
+        };
         reader.readAsDataURL(file);
       });
     }
