@@ -47,28 +47,44 @@
        ============================================================ */
     var ScoreDB = (function () {
       var DB_NAME = 'score-player-offline';
-      var DB_VERSION = 1;
+      var DB_VERSION = 2;
       var STORE_META = 'meta';    // keyPath: id  -> {id,name,mode,page_count,has_audio,audio_path,pages[],cover_path,size,downloaded_at}
       var STORE_BLOBS = 'blobs';  // keyPath: path -> {path,scoreId,type,blob}
       var _dbPromise = null;
+      var OPEN_TIMEOUT_MS = 3000;
+
+      function withTimeout(promise, ms, message) {
+        var timer = null;
+        var timeout = new Promise(function (_, reject) {
+          timer = setTimeout(function () { reject(new Error(message || 'IndexedDB 初始化超时')); }, ms);
+        });
+        return Promise.race([promise, timeout]).then(function (value) {
+          clearTimeout(timer);
+          return value;
+        }, function (err) {
+          clearTimeout(timer);
+          throw err;
+        });
+      }
 
       function open() {
         if (_dbPromise) return _dbPromise;
-        _dbPromise = new Promise(function (resolve, reject) {
+        _dbPromise = withTimeout(new Promise(function (resolve, reject) {
           if (!('indexedDB' in window)) { reject(new Error('当前环境不支持 IndexedDB')); return; }
           var req = indexedDB.open(DB_NAME, DB_VERSION);
           req.onupgradeneeded = function (e) {
             var db = e.target.result;
-            if (!db.objectStoreNames.contains(STORE_META)) {
-              db.createObjectStore(STORE_META, { keyPath: 'id' });
-            }
-            if (!db.objectStoreNames.contains(STORE_BLOBS)) {
-              var s = db.createObjectStore(STORE_BLOBS, { keyPath: 'path' });
-              s.createIndex('scoreId', 'scoreId', { unique: false });
-            }
+            if (db.objectStoreNames.contains(STORE_META)) db.deleteObjectStore(STORE_META);
+            if (db.objectStoreNames.contains(STORE_BLOBS)) db.deleteObjectStore(STORE_BLOBS);
+            db.createObjectStore(STORE_META, { keyPath: 'id' });
+            var s = db.createObjectStore(STORE_BLOBS, { keyPath: 'path' });
+            s.createIndex('scoreId', 'scoreId', { unique: false });
           };
           req.onsuccess = function () { resolve(req.result); };
           req.onerror = function () { reject(req.error); };
+        }), OPEN_TIMEOUT_MS, 'IndexedDB 初始化超时').catch(function (err) {
+          _dbPromise = null;
+          throw err;
         });
         return _dbPromise;
       }
@@ -909,7 +925,7 @@
     async function load(options) {
       const content = document.getElementById('content');
       const opts = options || {};
-      await refreshDownloadedIds();
+      const downloadedRefresh = refreshDownloadedIds();
       const cached = opts.skipCache ? null : readScoreListCache();
       if (!cached) renderSkeleton();
       if (cached) {
@@ -934,6 +950,7 @@
           document.getElementById('usersBtn').style.display = '';
         }
         renderScores();
+        downloadedRefresh.then(renderScores).catch(() => {});
       } catch (e) {
         if (!cached) content.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
         else toast('已显示缓存，后台更新失败', 'err');
