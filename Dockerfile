@@ -14,9 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ARG ANDROID_APK_URL=https://github.com/myb357/score-player/releases/download/v1.1.1/score-player.apk
-RUN mkdir -p static/android \
-    && python -c "import urllib.request; urllib.request.urlretrieve('${ANDROID_APK_URL}', 'static/android/score-player.apk')"
+# APK 随仓库 static/android/score-player.apk 一起进入镜像，避免构建时重新下载旧 Release 覆盖新版 APK。
 
 # 临时目录：仅存放 ffmpeg 转码临时文件（数据已外置到 Supabase + Backblaze B2，无需持久磁盘）
 ENV SCORE_DATA_DIR=/tmp/score_app_data
