@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - aime/1785683680-soft-router-auto-deploy
 
 permissions:
   contents: read
