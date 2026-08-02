@@ -6,3 +6,10 @@ __pycache__/
 score_app_data/
 score-player-source.zip
 *.apk
+
+# 软路由部署本地私密文件（切勿提交真实密钥/数据）
+deploy/softrouter/.env
+deploy/softrouter/sync/.env.sync
+deploy/softrouter/sync/rclone.conf
+deploy/softrouter/sync/logs/
+deploy/softrouter/data/

@@ -8,7 +8,79 @@
   <script>
     /* ---- 方案B: offline/web dual-mode runtime ---- */
     var IS_FILE = location.protocol === 'file:';
-    var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
+    /* ---- 服务端点故障切换：软路由优先 + Render 兜底（仅离线 APK/file:// 生效）---- */
+    var API_PRIMARY = 'https://istoreos.tail11098d.ts.net';   /* 软路由（主）*/
+    var API_FALLBACK = 'https://score-player.onrender.com';   /* Render（备）*/
+    var API_PROBE_TIMEOUT = 4000;   /* 软路由健康探测超时(ms)，3-5s */
+    var API_CHOICE_TTL = 60000;     /* 端点选择缓存(ms)，跨页面复用，避免每次重探 */
+    /* Web 模式(同源)保持相对路径 ''；离线 APK 默认先用软路由主地址 */
+    var API_BASE = IS_FILE ? API_PRIMARY : '';
+    function __epToast(msg) {
+      try {
+        if (!IS_FILE) return;
+        var d = document.createElement('div');
+        d.textContent = msg;
+        d.style.cssText = 'position:fixed;left:50%;bottom:48px;transform:translateX(-50%);'
+          + 'z-index:99999;background:rgba(40,40,48,.92);color:#fff;padding:10px 16px;'
+          + 'border-radius:20px;font-size:13px;max-width:80%;text-align:center;'
+          + 'box-shadow:0 4px 16px rgba(0,0,0,.25);pointer-events:none;';
+        (document.body || document.documentElement).appendChild(d);
+        setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 2600);
+      } catch (e) {}
+    }
+    function __epSetBase(base, reason) {
+      if (API_BASE === base) return;
+      API_BASE = base;
+      try { sessionStorage.setItem('api_base_choice', base + '|' + Date.now()); } catch (e) {}
+      if (base === API_FALLBACK) __epToast('软路由不可用，已切换到云端服务' + (reason || ''));
+    }
+    function __epProbe(url, timeout) {
+      if (typeof AbortController === 'undefined') return fetch(url, { cache: 'no-store' });
+      var ctrl = new AbortController();
+      var t = setTimeout(function () { ctrl.abort(); }, timeout);
+      return fetch(url, { cache: 'no-store', signal: ctrl.signal })
+        .finally(function () { clearTimeout(t); });
+    }
+    /* 端点选择：探测软路由 /api/v1/ping；成功用软路由，超时/失败切 Render。
+       结果缓存在 sessionStorage，TTL 内跨页面直接复用。返回 Promise。 */
+    var __apiBaseReady = (function () {
+      if (!IS_FILE) return Promise.resolve('');
+      try {
+        var cached = sessionStorage.getItem('api_base_choice');
+        if (cached) {
+          var p = cached.split('|');
+          if (p[0] && (Date.now() - (parseInt(p[1], 10) || 0)) < API_CHOICE_TTL) {
+            API_BASE = p[0]; return Promise.resolve(API_BASE);
+          }
+        }
+      } catch (e) {}
+      return __epProbe(API_PRIMARY + '/api/v1/ping', API_PROBE_TIMEOUT)
+        .then(function (r) {
+          if (r && r.ok) { __epSetBase(API_PRIMARY); return API_PRIMARY; }
+          __epSetBase(API_FALLBACK); return API_FALLBACK;
+        })
+        .catch(function () { __epSetBase(API_FALLBACK); return API_FALLBACK; });
+    })();
+    function __epRebase(url) {
+      if (!IS_FILE || !url) return url;
+      if (url.indexOf(API_PRIMARY) === 0) return API_BASE + url.slice(API_PRIMARY.length);
+      if (url.indexOf(API_FALLBACK) === 0) return API_BASE + url.slice(API_FALLBACK.length);
+      return url;
+    }
+    /* 统一网络出口：等待端点就绪→按当前 base 请求；网络层硬失败则切另一端点重试一次。
+       注意：不对正常请求加超时，避免中断上传/转码等长耗时请求。 */
+    window.__epFetch = function (url, opts) {
+      return __apiBaseReady.then(function () {
+        var u = __epRebase(url);
+        var switchable = IS_FILE && u.indexOf(API_BASE) === 0;
+        return fetch(u, opts).catch(function (err) {
+          if (!switchable) throw err;
+          var other = (API_BASE === API_PRIMARY) ? API_FALLBACK : API_PRIMARY;
+          __epSetBase(other, '（网络异常）');
+          return fetch(__epRebase(u), opts);
+        });
+      });
+    };
     function authToken() { try { return localStorage.getItem('auth_token') || ''; } catch (e) { return ''; } }
     function clearAuthToken() { try { localStorage.removeItem('auth_token'); } catch (e) {} }
     function apiFetch(path, opts) {
@@ -18,7 +90,7 @@
       var t = authToken();
       if (t) headers.set('Authorization', 'Bearer ' + t);
       opts.headers = headers;
-      return fetch(url, opts);
+      return window.__epFetch(url, opts);
     }
     function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
     function goLogin() { location.href = IS_FILE ? 'login.html' : '/login'; }

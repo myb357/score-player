@@ -25,6 +25,7 @@ from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
     FileResponse,
+    StreamingResponse,
     Response,
 )
 from typing import List, Optional
@@ -59,6 +60,14 @@ B2_BUCKET = os.environ.get("B2_BUCKET", "")
 B2_REGION = os.environ.get("B2_REGION", "")  # e.g. ca-east-006 (auto-derived if empty)
 # Presigned URL lifetime (S3 max is 7 days = 604800s).
 PRESIGN_TTL = int(os.environ.get("B2_PRESIGN_TTL", str(7 * 24 * 3600)))
+
+# Media delivery mode:
+#   MEDIA_PROXY=0 (default, cloud/Render): /api/media 302-redirects to a short-lived
+#     presigned URL — works when the object store is publicly reachable (e.g. B2).
+#   MEDIA_PROXY=1 (soft-router/local MinIO): the presigned URL would point at an
+#     internal address (e.g. http://minio:9000) that end devices cannot reach, so
+#     this service streams the object bytes itself (with HTTP Range support).
+MEDIA_PROXY = os.environ.get("MEDIA_PROXY", "0").strip() == "1"
 
 # Fixed admin credentials. Only the PBKDF2 hash is stored (encrypted at rest).
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
@@ -1888,14 +1897,56 @@ async def cleanup_b2_orphans(request: Request):
 
 
 # ----------------------------------------------------------------------------
-# Media redirect (backward-compat): 302 -> presigned B2 URL
+# Media delivery
+#   - default: 302 -> presigned URL (public object store, e.g. Backblaze B2)
+#   - MEDIA_PROXY=1: stream bytes through this service (local/internal MinIO)
 # ----------------------------------------------------------------------------
 @app.get("/api/media/{score_id}/{filename}")
-async def serve_media(score_id: int, filename: str):
+async def serve_media(score_id: int, filename: str, request: Request):
     if "/" in filename or ".." in filename:
         return Response(status_code=400)
-    url = b2_presigned_url(_score_key(score_id, filename))
-    return RedirectResponse(url=url, status_code=302)
+    key = _score_key(score_id, filename)
+
+    if not MEDIA_PROXY:
+        url = b2_presigned_url(key)
+        return RedirectResponse(url=url, status_code=302)
+
+    # Proxy mode: fetch (optionally a byte range) from the object store and stream it.
+    rng = request.headers.get("range") or request.headers.get("Range")
+    get_kwargs = {"Bucket": B2_BUCKET, "Key": key}
+    if rng:
+        get_kwargs["Range"] = rng
+    try:
+        obj = get_s3().get_object(**get_kwargs)
+    except Exception:
+        return Response(status_code=404, content="Not Found")
+
+    body = obj["Body"]
+    ctype = (
+        obj.get("ContentType")
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"}
+    status = 200
+    content_range = obj.get("ContentRange")
+    if rng and content_range:
+        headers["Content-Range"] = content_range
+        status = 206
+    length = obj.get("ContentLength")
+    if length is not None:
+        headers["Content-Length"] = str(length)
+
+    def _iter():
+        try:
+            for chunk in body.iter_chunks(chunk_size=64 * 1024):
+                yield chunk
+        finally:
+            body.close()
+
+    return StreamingResponse(
+        _iter(), status_code=status, media_type=ctype, headers=headers
+    )
 
 
 # Initialise database on import

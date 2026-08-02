@@ -1,0 +1,36 @@
+# ============================================================================
+# 同步任务容器：与本地主库栈同网段运行，定时把 本地 ▶ 云端 单向同步。
+# 用法：
+#   cp .env.sync.example .env.sync   并填入云端 Supabase / B2 凭据
+#   cp rclone.conf.example rclone.conf 并填入凭据
+#   docker compose -f docker-compose.sync.yml up -d --build
+#
+# 注意：external network 名称需与主库栈一致。主库栈 compose 目录名为 softrouter，
+#       其默认网络名为 softrouter_spnet。若不同请修改下方 networks.external.name。
+# ============================================================================
+
+services:
+  sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: score-player-sync:latest
+    container_name: sp-sync
+    restart: unless-stopped
+    env_file:
+      - .env.sync
+    environment:
+      TZ: Asia/Shanghai
+      LOG_DIR: /app/logs
+    volumes:
+      # rclone 配置（两个 S3 远端：minio 源 / b2 目的）
+      - ./rclone.conf:/app/rclone.conf:ro
+      # 同步日志持久化，便于排查
+      - ${SYNC_LOG_DIR:-./logs}:/app/logs
+    networks:
+      - spnet
+
+networks:
+  spnet:
+    external: true
+    name: ${MAIN_STACK_NETWORK:-softrouter_spnet}

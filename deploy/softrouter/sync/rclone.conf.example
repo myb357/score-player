@@ -1,0 +1,23 @@
+# ============================================================================
+# rclone 远端配置示例。复制为 rclone.conf 并填入真实凭据（勿提交真实密钥）。
+#   [minio] = 本地主对象存储（源）    [b2] = 云端 Backblaze B2（目的）
+# ============================================================================
+
+[minio]
+type = s3
+provider = Minio
+env_auth = false
+access_key_id = scoreadmin
+secret_access_key = change-me-minio
+endpoint = http://minio:9000
+region = us-east-1
+force_path_style = true
+
+[b2]
+type = s3
+provider = Other
+env_auth = false
+access_key_id = <your-b2-key-id>
+secret_access_key = <your-b2-application-key>
+endpoint = https://s3.ca-east-006.backblazeb2.com
+region = ca-east-006
