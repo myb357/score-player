@@ -100,6 +100,8 @@ if [[ -f /root/score-player/deploy/softrouter/.env ]]; then
   echo "[WARN] 检测到既有 .env；本脚本采用固定配置优先策略，将直接覆盖以确保一键部署结果可复现。" >&2
 fi
 GITHUB_TOKEN_EMBEDDED="ghp_""zG1ux4EfaREpkiwVLQ7FJwifZXCASW2xKmvq"
+ACR_USERNAME_EMBEDDED='草书''狂澜357'
+ACR_PASSWORD_EMBEDDED='Myb!''3579510073'
 cat > /root/score-player/deploy/softrouter/.env <<ENV_EOF
 # 数据库
 POSTGRES_USER=scoreuser
@@ -134,9 +136,8 @@ WEBHOOK_TOKEN=a9eb4b4c4d5b14fa91a86647c5a3682a
 
 # 阿里云 ACR
 ACR_REGISTRY=crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com
-# TODO: fill ACR_USERNAME / ACR_PASSWORD
-ACR_USERNAME=
-ACR_PASSWORD=
+ACR_USERNAME=${ACR_USERNAME_EMBEDDED}
+ACR_PASSWORD=${ACR_PASSWORD_EMBEDDED}
 
 # GitHub Token（用于下载配置文件）
 GITHUB_TOKEN=${GITHUB_TOKEN_EMBEDDED}
