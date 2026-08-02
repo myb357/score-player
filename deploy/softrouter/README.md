@@ -116,7 +116,7 @@ COOKIE_SECURE=0
 
 GitHub Actions 会把最新应用镜像同时推送到两个 registry：阿里云 ACR `crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest` 为软路由主镜像源；GHCR `ghcr.io/myb357/score-player:latest` 仅作为阿里云 ACR 不可达时的备用来源。
 
-CI/CD 流程为：推送代码到 GitHub 后，Actions 构建并推送镜像；镜像推送完成后，立即执行 `Trigger soft-router deploy` 步骤，通过 `curl -f -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${{ secrets.WEBHOOK_TOKEN }}"` 触发软路由 Webhook。该步骤配置了 `continue-on-error: true`，因此 Webhook 临时不可用或返回失败不会导致整条 CI 失败；软路由上的 Watchtower 仍会以 300 秒间隔作为兜底，持续检查 `sp-app` 的新镜像并自动更新。
+CI/CD 流程为：推送代码到 GitHub 后，Actions 构建并推送镜像；镜像推送完成后，立即执行 `Trigger soft-router deploy` 步骤，通过 `curl --fail-with-body --retry 3 --retry-delay 5 --retry-all-errors -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${WEBHOOK_TOKEN}"` 触发软路由 Webhook，并附带一段诊断用 JSON body。`sp-webhook` 以 query param 中的 `token` 为准并会读取丢弃 body，因此当前请求格式与 `server.py` 期望一致。该步骤配置了 `continue-on-error: true`，因此 Webhook 临时不可用或返回失败不会导致整条 CI 失败；软路由上的 Watchtower 仍会以 300 秒间隔作为兜底，持续检查 `sp-app` 的新镜像并自动更新。
 
 ## Webhook 自动部署（Cloudflare Tunnel 触发）
 

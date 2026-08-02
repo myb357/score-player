@@ -83,5 +83,11 @@ jobs:
 
       - name: Trigger soft-router deploy
         continue-on-error: true
+        env:
+          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
         run: |
-          curl -f -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${{ secrets.WEBHOOK_TOKEN }}"
+          curl --fail-with-body --show-error --silent --retry 3 --retry-delay 5 --retry-all-errors \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"source":"github-actions","workflow":"docker-publish"}' \
+            "https://webhook.scoreplayer-myb.top/deploy?token=${WEBHOOK_TOKEN}"
