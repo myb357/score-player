@@ -148,9 +148,18 @@ def b2_read_bytes(key: str) -> bytes:
         obj["Body"].close()
 
 
-def _replace_url_host(url: str, host: str) -> str:
+def _replace_url_origin(url: str, public_endpoint: str) -> str:
+    endpoint = public_endpoint.strip().rstrip("/")
+    b2_parts = urlsplit(_b2_endpoint_url())
+    b2_origin = urlunsplit((b2_parts.scheme, b2_parts.netloc, "", "", ""))
+    if b2_origin and url.startswith(b2_origin):
+        return endpoint + url[len(b2_origin):]
+
     parts = urlsplit(url)
-    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+    endpoint_parts = urlsplit(endpoint)
+    public_scheme = endpoint_parts.scheme or parts.scheme
+    public_netloc = endpoint_parts.netloc or endpoint_parts.path
+    return urlunsplit((public_scheme, public_netloc, parts.path, parts.query, parts.fragment))
 
 
 def b2_presigned_url(key: str, ttl: int = PRESIGN_TTL) -> str:
@@ -158,7 +167,7 @@ def b2_presigned_url(key: str, ttl: int = PRESIGN_TTL) -> str:
         "get_object", Params={"Bucket": B2_BUCKET, "Key": key}, ExpiresIn=ttl
     )
     if S3_PUBLIC_ENDPOINT:
-        url = _replace_url_host(url, S3_PUBLIC_ENDPOINT)
+        url = _replace_url_origin(url, S3_PUBLIC_ENDPOINT)
     return url
 
 
