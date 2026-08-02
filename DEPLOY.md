@@ -1,66 +1,76 @@
-# 部署指南：迁移到 Railway 并获取长期稳定的公网 HTTPS 链接
+# 部署指南：软路由为主，Render 为云端兜底
 
-本应用已容器化（`Dockerfile` 内置 ffmpeg），当前迁移目标为 Railway。仓库根目录已提供 `railway.json`，Railway 会按根目录 `Dockerfile` 构建，并使用 `/api/v1/ping` 做健康检查。
+score-player 当前生产架构已经从单一云平台部署调整为“软路由本地主栈 + Render 最终兜底”。主访问入口为 Cloudflare Tunnel 暴露的 `https://scoreplayer-myb.top`，媒体域名 `https://media.scoreplayer-myb.top` 直连软路由本地 MinIO，备用入口为 Tailscale `https://istoreos.tail11098d.ts.net`，Render `https://score-player.onrender.com` 仅作为云端兜底。
 
----
+## 当前整体架构
 
-## 方案 A：Railway（当前推荐）
+```
+用户 / APK
+  │
+  ├─ 主入口：Cloudflare Tunnel → https://scoreplayer-myb.top → 软路由 sp-app:9000
+  │                                      │
+  │                                      └─ PostgreSQL + MinIO 本地主库
+  │
+  ├─ 媒体：Cloudflare Tunnel → https://media.scoreplayer-myb.top → MinIO:9002
+  │
+  ├─ 备用：Tailscale → https://istoreos.tail11098d.ts.net
+  │
+  └─ 兜底：Render → https://score-player.onrender.com
+```
 
-### 步骤
-1. 打开 https://railway.app ，使用 GitHub 登录。
-2. 点击 **New Project** → **Deploy from GitHub repo**，选择 `myb357/score-player` 仓库。
-3. Railway 会读取仓库根目录的 `railway.json`，并按 `Dockerfile` 构建服务。
-4. 到服务的 **Variables** 配置运行时环境变量，至少需要填入 `DATABASE_URL`、`B2_KEY_ID`、`B2_APP_KEY`、`B2_ENDPOINT`、`B2_BUCKET`、`SECRET_KEY`；如需覆盖默认管理员账号，再配置 `ADMIN_USERNAME`、`ADMIN_SALT`、`ADMIN_HASH`。
-5. 到服务的 **Settings → Networking → Generate Domain** 生成公网 HTTPS 域名。
-6. 部署完成后访问 `https://<railway-domain>/api/v1/ping`，返回 `pong` 即表示应用健康。
+软路由本地栈由 Docker Compose 管理，包含 `sp-postgres`、`sp-minio`、`sp-app`、`sp-cloudflared` 和 `watchtower`。数据目录为 `/mnt/nas/score-player-data`，app 端口为 `9000`。应用镜像当前优先从阿里云 ACR 拉取：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`，GHCR `ghcr.io/myb357/score-player:latest` 保留为备用镜像源。
 
-### Railway 必填/建议环境变量
-| 变量 | 说明 |
-|---|---|
-| `DATABASE_URL` | Supabase PostgreSQL 连接串。建议使用 Session Pooler，并带 `sslmode=require`；代码也会自动补充 `sslmode=require`。 |
-| `B2_KEY_ID` | Backblaze B2 S3 兼容 Access Key。 |
-| `B2_APP_KEY` | Backblaze B2 S3 兼容 Secret Key。 |
-| `B2_ENDPOINT` | 当前约定为 `s3.ca-east-006.backblazeb2.com`。 |
-| `B2_BUCKET` | 当前约定为 `score-player`。 |
-| `B2_REGION` | 当前约定为 `ca-east-006`，不填时也可从 endpoint 自动解析。 |
-| `SCORE_DATA_DIR` | 运行时临时目录，建议保持 `/tmp/score_app_data`。 |
-| `SECRET_KEY` | 会话签名密钥，生产环境必须配置为随机强密钥。 |
-| `ADMIN_USERNAME` / `ADMIN_SALT` / `ADMIN_HASH` | 可选，用于覆盖默认管理员账号和密码哈希。 |
+关键运行配置包括 `MEDIA_PROXY=0`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`。其中 `MEDIA_PROXY=0` 表示媒体访问绕过 app 代理，由媒体域名直连 MinIO。
 
-### 迁移注意事项
-本项目的持久数据已外置到 Supabase PostgreSQL 和 Backblaze B2，Railway 容器本身只保存 ffmpeg 转码临时文件，因此无需迁移本地磁盘数据。`SCORE_DATA_DIR` 可以继续使用 `/tmp/score_app_data`，不要把谱子图片或音频改回容器本地存储。
+## 方案 A：软路由本地主部署（当前推荐）
 
-如果线上域名从 Render 切换为 Railway，Android 包或前端中如有写死旧域名，需要同步更新为新的 Railway 域名。
+当前推荐部署方式是使用 `deploy/softrouter/migrate.sh` 在软路由上一键迁移和启动。脚本会写出运行所需的 `.env`、`docker-compose.yml`、Cloudflare Tunnel 配置，登录阿里云 ACR，并启动完整本地栈。
 
----
+```bash
+cd deploy/softrouter
+bash migrate.sh
+```
 
-## 方案 B：Render（历史方案，含免费套餐）
+迁移前需确认软路由已安装 Docker 和 docker-compose 或 Docker Compose v2，并且 `/mnt/nas/score-player-data` 已挂载到持久化存储。迁移后使用以下命令检查健康状态：
 
-### 步骤
-1. 把 `score_app/` 目录推到你自己的 Git 仓库（GitHub / GitLab 均可）。
-2. 打开 https://render.com ，用 GitHub 登录。
-3. 点击 **New +** → **Blueprint**，选择该仓库；Render 会自动读取 `render.yaml` 创建 Web Service。
-   - 或选择 **New +** → **Web Service** → **Docker**，手动指向 `Dockerfile`。
-4. 等待构建完成，即可得到固定域名，例如：`https://score-player.onrender.com`（HTTPS，长期有效）。
+```bash
+docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
+curl -fsS http://127.0.0.1:9000/api/v1/ping
+curl -fsS https://scoreplayer-myb.top/api/v1/ping
+```
 
-### 套餐说明（重要）
-| 套餐 | 费用 | 数据持久化 | 常驻 |
-|---|---|---|---|
-| **Free** | 免费 | ❌ 无磁盘，重启/重新部署后数据清空 | ⚠️ 约 15 分钟无访问会休眠，下次访问需几十秒唤醒 |
-| **Starter** | ~$7/月 | ✅ 挂载持久磁盘后永久保存 | ✅ 一直在线不休眠 |
+GitHub Actions 会同时推送镜像到 GHCR 和阿里云 ACR。软路由上的 Watchtower 每 5 分钟自动检查并更新 `sp-app`，因此发布新版本通常只需要推送代码并等待镜像构建完成。
 
-- 免费套餐可满足“公网 HTTPS 链接长期有效”，但**数据不持久**且会休眠。
-- 若要**数据永久保存 + 永不休眠**：在 Render 把 `plan` 改为 `starter`，并在 `render.yaml` 中取消 `disk:` 段落的注释（挂载 `/data`）。
+## 方案 B：Render（当前云端兜底）
 
----
+Render 当前不再作为主生产入口，而是作为软路由和 Tailscale 均不可用时的最终兜底。Render 服务仍可通过仓库根目录的 `render.yaml` 使用 Dockerfile 构建，并以 `/api/v1/ping` 作为健康检查路径。
 
-## 保持长期运行的建议
-- **推荐**：Railway Hobby。当前架构已使用 Supabase PostgreSQL + Backblaze B2 做持久化，容器本地仅保存临时转码文件。
-- **Render 历史保活方案**：Render Free 会休眠，可用 UptimeRobot（免费）每 5～10 分钟访问一次 `https://<你的域名>/api/v1/ping` 来减少休眠概率（但不保证 100% 常驻）。
-- 不建议把业务数据重新放回 Railway/Render 本地磁盘；如仅用于 ffmpeg 临时文件，`SCORE_DATA_DIR=/tmp/score_app_data` 即可。
+Render 环境变量仍应通过平台控制台配置，不应写入仓库。核心变量包括 `DATABASE_URL`、`B2_KEY_ID`、`B2_APP_KEY`、`B2_ENDPOINT`、`B2_BUCKET`、`B2_REGION`、`SECRET_KEY`、`SCORE_DATA_DIR`、`ADMIN_USERNAME`、`ADMIN_SALT`、`ADMIN_HASH` 等。
+
+Render 连接 Supabase 时必须优先使用 Session Pooler 地址，并带 `sslmode=require`。这是因为 Supabase 直连地址可能只有 IPv6，而 Render 出网只支持 IPv4，使用直连地址可能导致登录或数据库访问返回 500。
+
+## 方案 C：Railway（历史方案）
+
+Railway 是历史部署方案，仓库中的 `railway.json` 保留用于记录和回退参考，但当前不再推荐作为主部署路径。历史 Railway 部署方式为：在 Railway 使用 GitHub 登录，选择 `myb357/score-player` 仓库，通过根目录 `Dockerfile` 构建服务，并在 Variables 中配置 `DATABASE_URL`、B2 凭据、`SECRET_KEY` 和管理员覆盖变量。
+
+如果未来重新启用 Railway，应先确认 APK 端点、Cloudflare Tunnel、媒体域名和 CI/CD 镜像流向是否需要同步调整，避免出现文档、APK 和实际入口不一致。
+
+## APK 端点配置
+
+Android APK 当前使用三级端点：
+
+```js
+API_PRIMARY = 'https://scoreplayer-myb.top'
+API_FALLBACK = 'https://istoreos.tail11098d.ts.net'
+API_FALLBACK2 = 'https://score-player.onrender.com'
+```
+
+离线 APK 会优先访问 Cloudflare Tunnel 主入口，失败后切换到 Tailscale，最后才切到 Render。浏览器 Web 访问使用同源相对路径，不依赖该三级端点配置。
 
 ## 修改登录密码
-用下面命令生成新的 salt/hash，再在平台环境变量里设置 `ADMIN_SALT` 与 `ADMIN_HASH`：
+
+用下面命令生成新的 salt/hash，再在对应部署环境变量里设置 `ADMIN_SALT` 与 `ADMIN_HASH`：
+
 ```python
 import secrets, hashlib
 pw = "你的新密码"
@@ -69,33 +79,10 @@ h = hashlib.pbkdf2_hmac('sha256', pw.encode(), bytes.fromhex(salt), 200000).hex(
 print("ADMIN_SALT=", salt); print("ADMIN_HASH=", h)
 ```
 
----
+## 故障排查：Render 登录报错 500 / 数据库连不上
 
-## ⚠️ 故障排查：Render 登录报错 500 / 数据库连不上（IPv6 问题）
+如果 `https://score-player.onrender.com/api/v1/ping` 返回正常，但 `/api/login` 返回 500，优先检查 Render 的 `DATABASE_URL` 是否仍在使用 Supabase 直连地址 `db.<ref>.supabase.co`。该直连地址可能只有 IPv6，而 Render 出网只支持 IPv4。
 
-### 现象
-- `https://score-player.onrender.com/api/v1/ping` 返回 200（应用本身正常）；
-- 但 `/api/login` 返回 **500 Internal Server Error**，网页登录失败。
+修复方式是在 Supabase 控制台进入 Project Settings → Database → Connection string，选择 Session pooler，复制形如 `postgresql://postgres.<项目ref>:<密码>@aws-0-<区域>.pooler.supabase.com:5432/postgres` 的 URI，并在 Render Environment 中替换 `DATABASE_URL`。保存后触发 Render 重建，再重新验证登录。
 
-### 根因
-Supabase 的**直连地址** `db.<ref>.supabase.co` 现在**只有 IPv6（AAAA）地址，没有 IPv4（A）地址**。
-而 **Render 的出网只支持 IPv4**，因此 Render 容器无法连上 Supabase 直连端口，所有数据库操作抛异常 → 登录 500。
-（本地开发机若有 IPv6 则能连上，所以本地正常、线上失败。）
-
-### 修复：把 Render 的 `DATABASE_URL` 换成 Supabase 的 IPv4「连接池（Connection Pooler / Supavisor）」地址
-
-1. 打开 Supabase 控制台 → **Project Settings → Database → Connection string** → 选择 **Session pooler**（或页面上的 "Connection pooling"）。
-2. 复制其中的 URI，形如：
-   ```
-   postgresql://postgres.<项目ref>:<你的密码>@aws-0-<区域>.pooler.supabase.com:5432/postgres
-   ```
-   - 用户名是 `postgres.<项目ref>`（注意带项目 ref，和直连不同）；
-   - 主机是 `aws-0-<区域>.pooler.supabase.com`（**IPv4 可达**）；
-   - **Session 模式用 5432 端口**（推荐，兼容连接池）；Transaction 模式用 6543。
-   - 本项目 ref 为 `vniuunggpcvjriysjgcx`，区域 `<区域>` 请以控制台显示为准（如 `us-east-1` / `ap-northeast-1` 等）。
-3. 到 **Render → 你的服务 → Environment**，把 `DATABASE_URL` 的值改成上面复制的 pooler URI，保存。
-4. Render 会自动重建；或手动 **Manual Deploy → Clear build cache & deploy / Deploy latest commit**。
-5. 重新访问网站登录（admin / 你的密码）即可。
-
-> 说明：数据库里的 `users`/`admin` 数据、密码哈希都是正确的（已核验），无需重建数据；这纯粹是 Render→Supabase 的网络可达性（IPv6）配置问题，只需替换连接串。
-> 若密码中含特殊字符（如 `!`）导致 URI 解析异常，可对该字符做 URL 编码（`!` → `%21`）。
+数据库中的用户和密码哈希无需重建；该问题属于 Render 到 Supabase 的网络可达性配置问题。

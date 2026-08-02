@@ -10,17 +10,19 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 ## 2. 部署信息
 
-公网地址为 `https://score-player.onrender.com`，当前迁移目标为 Render，迁移完成后应以 Render 公网 HTTPS 域名为准。
+当前生产访问以软路由本地栈为主，主入口为 Cloudflare Tunnel 暴露的 `https://scoreplayer-myb.top`。Cloudflare DNS 已配置到该 Tunnel；媒体资源使用独立域名 `https://media.scoreplayer-myb.top` 直连本地 MinIO，绕过 app 代理。备用入口为 Tailscale `https://istoreos.tail11098d.ts.net`，最终兜底仍保留 Render `https://score-player.onrender.com`。
 
-部署平台从 Railway 迁回 Render。Render 服务仍通过 GitHub 仓库自动部署，仓库根目录的 `render.yaml` 指定服务配置，并以 `/api/v1/ping` 作为健康检查路径。
+软路由本地栈运行在 iStoreOS Docker Compose 中，当前服务包括 `sp-postgres`、`sp-minio`、`sp-app`、`sp-cloudflared` 和 `watchtower`。数据目录固定为 `/mnt/nas/score-player-data`，app 对外端口为 `9000`，MinIO S3 端口为 `9002`。本地 PostgreSQL 与 MinIO 是主库和主对象存储，Render 侧继续作为云端兜底能力。
 
-GitHub 仓库为 `myb357/score-player`，仓库类型为 private。
+镜像主来源为阿里云 ACR：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`。GitHub Actions 同时推送 GHCR：`ghcr.io/myb357/score-player:latest`，作为备用镜像源。软路由上的 Watchtower 每 5 分钟检查并自动拉取新镜像更新 `sp-app`。
 
-数据库使用 Supabase PostgreSQL。Render 线上环境必须使用 Supabase Session Pooler 地址连接数据库，当前约定的 Session Pooler 主机与端口为 `aws-0-ap-northeast-1.pooler.supabase.com:5432`。
+软路由当前关键运行环境变量包括 `MEDIA_PROXY=0`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`、`DATABASE_URL=postgresql://score:<password>@db:5432/scoredb?sslmode=disable`、`B2_BUCKET=score-player`、`B2_REGION=us-east-1`。其中 `MEDIA_PROXY=0` 表示媒体访问不经 app 代理，由 `S3_PUBLIC_ENDPOINT` 指向的媒体域名直连 MinIO。
 
-文件存储使用 Backblaze B2 的 S3 兼容接口，bucket 为 `score-player`，endpoint 为 `s3.ca-east-006.backblazeb2.com`。
+Android APK 使用三级端点：`API_PRIMARY='https://scoreplayer-myb.top'`、`API_FALLBACK='https://istoreos.tail11098d.ts.net'`、`API_FALLBACK2='https://score-player.onrender.com'`。离线 APK 会先探测 Cloudflare Tunnel 主入口，再切换到 Tailscale，最后才使用 Render 兜底。
 
-Render 环境变量只应配置变量名，不应把敏感值写入仓库。核心变量名包括 `DATABASE_URL`、`B2_KEY_ID`、`B2_APP_KEY`、`B2_ENDPOINT`、`B2_BUCKET`、`SECRET_KEY`。当前代码和 `render.yaml` 还会读取或声明 `SCORE_DATA_DIR`、`B2_REGION`、`B2_PRESIGN_TTL`、`ADMIN_USERNAME`、`ADMIN_SALT`、`ADMIN_HASH`、`FFMPEG_BINARY` 等变量；这些变量用于运行时临时目录、B2 区域、预签名 URL 有效期、管理员凭据覆盖和 ffmpeg 路径覆盖。
+一键迁移脚本为 `deploy/softrouter/migrate.sh`。脚本内嵌软路由运行所需配置和 Cloudflare Tunnel 凭证，在目标软路由上执行 `bash migrate.sh` 即可写出 `.env`、`docker-compose.yml`、Cloudflare 配置，登录阿里云 ACR，并启动完整本地栈。
+
+GitHub 仓库为 `myb357/score-player`，仓库类型为 private。`render.yaml` 和 `railway.json` 均保留为历史或兜底部署配置；当前主生产路径不再依赖 Railway，Render 仅作为最终云端兜底。
 
 ## 3. 代码结构
 
