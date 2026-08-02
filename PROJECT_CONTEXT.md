@@ -14,7 +14,7 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 软路由本地栈运行在 iStoreOS Docker Compose 中，当前服务包括 `sp-postgres`、`sp-minio`、`sp-app`、`sp-cloudflared` 和 `watchtower`。数据目录固定为 `/mnt/nas/score-player-data`，app 对外端口为 `9000`，MinIO S3 端口为 `9002`。本地 PostgreSQL 与 MinIO 是主库和主对象存储，Render 侧继续作为云端兜底能力。
 
-镜像主来源为阿里云 ACR：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`。GitHub Actions 同时推送 GHCR：`ghcr.io/myb357/score-player:latest`，作为备用镜像源。软路由上的 Watchtower 每 5 分钟检查并自动拉取新镜像更新 `sp-app`。
+镜像主来源为阿里云 ACR：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`。GitHub Actions 同时推送 GHCR：`ghcr.io/myb357/score-player:latest`，作为备用镜像源。软路由上的 Watchtower 每 5 分钟检查并自动拉取新镜像更新 `sp-app`。CI 还预留了 Tailscale SSH 主动部署步骤：`SOFTROUTER_SSH_KEY` 已配置为 Repository Secret；待补充 `TAILSCALE_AUTH_KEY` 后，workflow 会在镜像推送完成后连接 `istoreos.tail11098d.ts.net` 并执行软路由 `sp-app` 更新命令。
 
 软路由当前关键运行环境变量包括 `MEDIA_PROXY=0`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`、`DATABASE_URL=postgresql://score:<password>@db:5432/scoredb?sslmode=disable`、`B2_BUCKET=score-player`、`B2_REGION=us-east-1`。其中 `MEDIA_PROXY=0` 表示媒体访问不经 app 代理，由 `S3_PUBLIC_ENDPOINT` 指向的媒体域名直连 MinIO；后端生成媒体预签名 URL 时也会直接使用该公开端点作为 S3 client endpoint，确保签名中的 host 与外网访问域名一致。
 

@@ -41,6 +41,8 @@ curl -fsS https://scoreplayer-myb.top/api/v1/ping
 
 GitHub Actions 会同时推送镜像到 GHCR 和阿里云 ACR。软路由上的 Watchtower 每 5 分钟自动检查并更新 `sp-app`，因此发布新版本通常只需要推送代码并等待镜像构建完成。
 
+CI 已增加软路由主动部署占位步骤：当 GitHub Repository Secret `TAILSCALE_AUTH_KEY` 配置完成后，镜像推送完成会通过 Tailscale SSH 连接 `istoreos.tail11098d.ts.net`，使用 `SOFTROUTER_SSH_KEY` 执行拉取最新阿里云 ACR 镜像并重启 `sp-app` 的命令。当前 `SOFTROUTER_SSH_KEY` 已配置，`TAILSCALE_AUTH_KEY` 未配置时该步骤按 workflow 条件跳过，Watchtower 仍作为默认更新机制。
+
 ## 方案 B：Render（当前云端兜底）
 
 Render 当前不再作为主生产入口，而是作为软路由和 Tailscale 均不可用时的最终兜底。Render 服务仍可通过仓库根目录的 `render.yaml` 使用 Dockerfile 构建，并以 `/api/v1/ping` 作为健康检查路径。

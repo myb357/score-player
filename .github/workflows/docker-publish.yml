@@ -43,3 +43,21 @@ jobs:
           tags: |
             ghcr.io/myb357/score-player:latest
             crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest
+
+      - name: Deploy to soft router via Tailscale SSH
+        # TODO: Add TAILSCALE_AUTH_KEY secret to enable this step
+        if: ${{ secrets.TAILSCALE_AUTH_KEY != '' }}
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+
+      - name: SSH trigger update on soft router
+        if: ${{ secrets.TAILSCALE_AUTH_KEY != '' }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: istoreos.tail11098d.ts.net
+          username: root
+          key: ${{ secrets.SOFTROUTER_SSH_KEY }}
+          script: |
+            docker pull crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest
+            docker-compose -f /root/score-player/deploy/softrouter/docker-compose.yml up -d --no-deps sp-app

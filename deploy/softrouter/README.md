@@ -101,6 +101,8 @@ GitHub Actions 会把最新应用镜像同时推送到两个 registry：GHCR `gh
 
 Watchtower 在软路由上以 300 秒间隔运行，持续检查 `sp-app` 的新镜像并自动更新。因此正常发布流程是推送代码到 GitHub，等待 Actions 构建并推送镜像，随后由 Watchtower 自动在软路由拉取并替换应用容器。
 
+GitHub Actions 已预留 Tailscale SSH 主动部署步骤：镜像推送完成后，如仓库 Secrets 中已配置 `TAILSCALE_AUTH_KEY`，工作流会通过 Tailscale 连接 `istoreos.tail11098d.ts.net`，使用 `SOFTROUTER_SSH_KEY` 登录软路由并执行 `docker pull` 与 `docker-compose -f /root/score-player/deploy/softrouter/docker-compose.yml up -d --no-deps sp-app`。当前 `SOFTROUTER_SSH_KEY` 已作为 GitHub Repository Secret 配置，`TAILSCALE_AUTH_KEY` 仍为空时该主动部署步骤会被跳过，继续依赖 Watchtower 自动更新。
+
 ## APK 三级端点
 
 Android APK 的离线 WebView 资源使用三级端点故障切换：
