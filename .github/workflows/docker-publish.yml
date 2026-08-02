@@ -44,20 +44,10 @@ jobs:
             ghcr.io/myb357/score-player:latest
             crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest
 
-      - name: Deploy to soft router via Tailscale SSH
-        # TODO: Add TAILSCALE_AUTH_KEY secret to enable this step
-        if: ${{ secrets.TAILSCALE_AUTH_KEY != '' }}
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-
-      - name: SSH trigger update on soft router
-        if: ${{ secrets.TAILSCALE_AUTH_KEY != '' }}
-        uses: appleboy/ssh-action@v1
-        with:
-          host: istoreos.tail11098d.ts.net
-          username: root
-          key: ${{ secrets.SOFTROUTER_SSH_KEY }}
-          script: |
-            docker pull crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest
-            docker-compose -f /root/score-player/deploy/softrouter/docker-compose.yml up -d --no-deps sp-app
+      # 镜像推送完成后，通过 Cloudflare Tunnel 暴露的 Webhook 主动触发软路由部署。
+      # 需要在仓库 Secrets 中配置 WEBHOOK_TOKEN（与软路由 .env 中的 WEBHOOK_TOKEN 一致）。
+      - name: Trigger soft router deploy via Webhook
+        run: |
+          curl -f -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${{ secrets.WEBHOOK_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --retry 3 --retry-delay 5 --max-time 60

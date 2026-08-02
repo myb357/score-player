@@ -93,6 +93,37 @@ services:
       - "${APP_PUBLISH:-9000}:8000"
     networks: [spnet]
 
+  # ---- Webhook 自动部署接收器 ----
+  # GitHub Actions 推送镜像后，通过 Cloudflare Tunnel
+  # (webhook.scoreplayer-myb.top -> http://172.17.0.1:9003) POST /deploy 触发，
+  # 由本容器在软路由本地执行 docker pull + docker-compose up -d --no-deps sp-app。
+  #
+  # 说明：
+  #  - 使用 python:3.11-alpine 基础镜像 + 挂载 server.py，server.py 启动时会
+  #    通过 apk 自动安装 docker-cli / docker-cli-compose（基础镜像不自带）。
+  #  - 挂载 docker.sock 以便容器内调用宿主机 Docker；挂载 /root/score-player
+  #    以便读取部署所用的 docker-compose.yml。
+  #  - cloudflared 以 network_mode: host 运行并通过 172.17.0.1 访问宿主机端口，
+  #    因此这里必须把 9003 暴露到宿主机的该地址（不能只绑 127.0.0.1，否则
+  #    host 网络下的 cloudflared 无法经 172.17.0.1 访问）。与 sp-app 一致地
+  #    暴露到宿主机，同时限定在 docker0 网关地址，避免额外暴露到局域网。
+  sp-webhook:
+    image: python:3.11-alpine
+    container_name: sp-webhook
+    restart: unless-stopped
+    volumes:
+      - ./webhook/server.py:/app/server.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/score-player:/root/score-player:ro
+    working_dir: /app
+    command: python server.py
+    environment:
+      WEBHOOK_TOKEN: ${WEBHOOK_TOKEN}
+    ports:
+      - "172.17.0.1:9003:9003"
+    networks:
+      - spnet
+
 networks:
   spnet:
     driver: bridge
