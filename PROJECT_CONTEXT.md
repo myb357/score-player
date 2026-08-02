@@ -20,9 +20,9 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 Android APK 的原生入口使用“内网优先、外网兜底”策略：启动或 WebView 首次加载前，Kotlin 侧会对 `http://192.168.1.2:9000` 发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；若内网可达则直接加载 `http://192.168.1.2:9000`，否则加载外网入口 `https://scoreplayer-myb.top`。每次 App 进入前台都会重新探测，以适配家庭 Wi-Fi 与外出网络切换。探测结果由原生侧控制 WebView URL，并通过 `AndroidBridge.getActiveBaseUrl()` 与 `AndroidBridge.isInternalNetworkReachable()` 暴露给页面按需读取。
 
-一键迁移脚本为 `deploy/softrouter/migrate.sh`。脚本内嵌软路由运行所需 `.env` 配置和 Cloudflare Tunnel 凭证，在目标软路由上执行 `bash migrate.sh` 即可直接写出 `/root/score-player/deploy/softrouter/.env`、`docker-compose.yml`、Cloudflare 配置，登录阿里云 ACR，并启动完整本地栈；若目标 `.env` 已存在，脚本采用固定配置优先策略直接覆盖。
+一键迁移脚本为 `deploy/softrouter/migrate.sh`。当前推荐在软路由上直接执行 `bash <(curl -fsSL "https://raw.githubusercontent.com/myb357/score-player/aime/1785683680-soft-router-auto-deploy/deploy/softrouter/migrate.sh")`。脚本已内嵌完整部署所需凭据与配置，包括 DB、MinIO、ACR、Webhook、GitHub Token、Cloudflare Tunnel 等内容；用户无需手动准备 `.env`，也无需先克隆仓库或手动下载 compose 文件，直接运行即可。脚本当前固定执行 9 步：步骤 1/9 创建目录结构（`/root/score-player/deploy/softrouter` 等）；步骤 2/9 写出 `.env`（含 DB、MinIO、ACR、Webhook、GitHub Token 等全部凭据）；步骤 3/9 从 GitHub 下载最新 `docker-compose.yml`；步骤 4/9 从 GitHub 下载最新 `webhook/server.py`；步骤 5/9 写出 Cloudflare Tunnel 凭证文件；步骤 6/9 写出 Cloudflare `config.yml`；步骤 7/9 ACR 登录；步骤 8/9 执行 `docker-compose up -d`，启动 `db`、`minio`、`score-player`、`sp-webhook` 等服务；步骤 9/9 验证容器状态。若目标 `.env` 已存在，脚本采用固定配置优先策略直接覆盖。
 
-GitHub 仓库为 `myb357/score-player`，仓库类型为 private。`render.yaml` 和 `railway.json` 均保留为历史或兜底部署配置；当前主生产路径不再依赖 Railway，Render 仅作为最终云端兜底。
+GitHub 仓库为 `myb357/score-player`，仓库类型为 private。当前软路由一键部署与 APK 内网优先逻辑相关的最新提交记录（按时间顺序）为：`70c7d3d refactor: migrate.sh downloads compose/server.py from GitHub instead of inline heredoc`、`58472fa feat: embed all credentials in migrate.sh for one-command deploy`、`439b20b feat: fill ACR credentials in migrate.sh`、`c02e89a feat: Android App LAN-first with WAN fallback`。`render.yaml` 和 `railway.json` 均保留为历史或兜底部署配置；当前主生产路径不再依赖 Railway，Render 仅作为最终云端兜底。
 
 ## 3. 代码结构
 

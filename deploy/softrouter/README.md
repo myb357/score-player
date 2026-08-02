@@ -53,14 +53,27 @@ deploy/softrouter/
     └── .env.sync.example         # 同步容器环境变量模板
 ```
 
-## 一键迁移
+## 一键迁移（当前最重要入口）
 
-当前推荐直接使用 `migrate.sh` 完成软路由迁移。脚本已内嵌完整 `.env` 内容，会自动写入 `/root/score-player/deploy/softrouter/.env`，用户运行前无需手动创建或填写 `.env`；若目标 `.env` 已存在，脚本会按固定配置优先策略直接覆盖，以确保一键部署结果可复现。脚本还会写出 Cloudflare Tunnel 凭证与配置，并通过内嵌的 `GITHUB_TOKEN` 使用 GitHub API 下载仓库分支 `aime/1785683680-soft-router-auto-deploy` 上的最新 `docker-compose.yml` 与 `webhook/server.py`，避免迁移脚本中的内嵌模板与仓库模板脱节。随后脚本会读取内嵌的 `ACR_REGISTRY`、`ACR_USERNAME`、`ACR_PASSWORD` 完成阿里云 ACR 登录，并启动完整服务栈（包含 `sp-webhook`）。
+在软路由上直接执行以下命令即可完成迁移与启动：
 
 ```bash
-cd deploy/softrouter
-bash migrate.sh
+bash <(curl -fsSL "https://raw.githubusercontent.com/myb357/score-player/aime/1785683680-soft-router-auto-deploy/deploy/softrouter/migrate.sh")
 ```
+
+`migrate.sh` 已内嵌完整部署所需凭据与配置，包括 DB、MinIO、ACR、Webhook、GitHub Token、Cloudflare Tunnel 等内容。用户无需手动准备 `.env`，也无需先克隆仓库或手动下载 compose 文件，直接运行上述命令即可。若目标 `.env` 已存在，脚本会按固定配置优先策略直接覆盖，以确保一键部署结果可复现。
+
+脚本当前执行流程固定为 9 步：
+
+1. 创建目录结构（`/root/score-player/deploy/softrouter` 等）。
+2. 写出 `.env`（含 DB、MinIO、ACR、Webhook、GitHub Token 等全部凭据）。
+3. 从 GitHub 下载最新 `docker-compose.yml`。
+4. 从 GitHub 下载最新 `webhook/server.py`。
+5. 写出 Cloudflare Tunnel 凭证文件。
+6. 写出 Cloudflare `config.yml`。
+7. ACR 登录。
+8. 执行 `docker-compose up -d`，启动 `db`、`minio`、`score-player`、`sp-webhook` 等服务。
+9. 验证容器状态。
 
 脚本目标运行环境为 iStoreOS / OpenWrt 系系统，需具备 `docker`、`docker-compose` 或 `docker compose` 插件、`curl`，以及 `openssl` 或 `python3`。脚本要求 root 权限运行，并默认使用 `/mnt/nas/score-player-data` 作为持久化数据目录。重复执行时会覆盖脚本管理的配置文件，并通过 compose 幂等更新容器。
 
@@ -150,6 +163,17 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 > 注意：`migrate.sh` 不再内嵌 `docker-compose.yml` 与 `webhook/server.py`，而是在运行时通过 GitHub API 下载当前分支上的最新版本；后续调整 compose 或 webhook 服务时，只需保证仓库模板已更新。Cloudflare `config.yml` 仍由 `migrate.sh` 写出，若调整 Tunnel ingress 仍需同步更新迁移脚本。
 
+## 最新提交记录
+
+以下为当前软路由一键部署与 APK 内网优先逻辑相关的最新提交记录（按时间顺序）：
+
+| Commit | 说明 |
+|---|---|
+| `70c7d3d` | `refactor: migrate.sh downloads compose/server.py from GitHub instead of inline heredoc` |
+| `58472fa` | `feat: embed all credentials in migrate.sh for one-command deploy` |
+| `439b20b` | `feat: fill ACR credentials in migrate.sh` |
+| `c02e89a` | `feat: Android App LAN-first with WAN fallback` |
+
 ## APK 内网优先端点
 
 Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址：
@@ -170,5 +194,5 @@ Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址
 1. `https://scoreplayer-myb.top/api/v1/ping` 返回 `pong`。
 2. `https://media.scoreplayer-myb.top` 能通过 Cloudflare Tunnel 访问本地 MinIO 暴露的媒体资源。
 3. `sp-postgres`、`sp-minio`、`sp-app`、`sp-cloudflared`、`watchtower`、`sp-webhook` 均处于运行状态。
-4. APK 冷启动优先使用 Cloudflare Tunnel，主入口不可用时依次切换到 Tailscale 与 Render。
+4. APK 冷启动优先探测 `http://192.168.1.2:9000`；内网可达时使用内网地址，不可达时使用 `https://scoreplayer-myb.top`，并且每次回到前台重新探测。
 5. GitHub Actions 推送新镜像后，Watchtower 能在约 5 分钟内更新 `sp-app`；Webhook 链路配置完成后，`https://webhook.scoreplayer-myb.top/health` 返回 `{"status":"ok"}`，且 CI 的 “Trigger soft router deploy via Webhook” 步骤成功触发 `sp-app` 即时更新。

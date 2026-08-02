@@ -24,12 +24,13 @@ score-player 当前生产架构已经从单一云平台部署调整为“软路�
 
 ## 方案 A：软路由本地主部署（当前推荐）
 
-当前推荐部署方式是使用 `deploy/softrouter/migrate.sh` 在软路由上一键迁移和启动。脚本已内嵌完整 `.env` 内容，会自动写入 `/root/score-player/deploy/softrouter/.env`，用户运行前无需手动准备 `.env`；若目标 `.env` 已存在，脚本会直接覆盖以保持部署配置与脚本一致。脚本还会写出 `docker-compose.yml`、Cloudflare Tunnel 配置，登录阿里云 ACR，并启动完整本地栈。
+当前推荐部署方式是在软路由上直接执行一键迁移命令。脚本已内嵌完整部署所需凭据与配置，包括 DB、MinIO、ACR、Webhook、GitHub Token、Cloudflare Tunnel 等内容；用户无需手动准备 `.env`，也无需先克隆仓库或手动下载 compose 文件，直接运行即可。
 
 ```bash
-cd deploy/softrouter
-bash migrate.sh
+bash <(curl -fsSL "https://raw.githubusercontent.com/myb357/score-player/aime/1785683680-soft-router-auto-deploy/deploy/softrouter/migrate.sh")
 ```
+
+`migrate.sh` 当前执行流程固定为 9 步：步骤 1/9 创建目录结构（`/root/score-player/deploy/softrouter` 等）；步骤 2/9 写出 `.env`（含 DB、MinIO、ACR、Webhook、GitHub Token 等全部凭据）；步骤 3/9 从 GitHub 下载最新 `docker-compose.yml`；步骤 4/9 从 GitHub 下载最新 `webhook/server.py`；步骤 5/9 写出 Cloudflare Tunnel 凭证文件；步骤 6/9 写出 Cloudflare `config.yml`；步骤 7/9 ACR 登录；步骤 8/9 执行 `docker-compose up -d`，启动 `db`、`minio`、`score-player`、`sp-webhook` 等服务；步骤 9/9 验证容器状态。
 
 迁移前需确认软路由已安装 Docker 和 docker-compose 或 Docker Compose v2，并且 `/mnt/nas/score-player-data` 已挂载到持久化存储。迁移后使用以下命令检查健康状态：
 
@@ -42,6 +43,8 @@ curl -fsS https://scoreplayer-myb.top/api/v1/ping
 GitHub Actions 会同时推送镜像到 GHCR 和阿里云 ACR。软路由上的 Watchtower 每 5 分钟自动检查并更新 `sp-app`，因此发布新版本通常只需要推送代码并等待镜像构建完成。
 
 CI 已改为「Webhook 主动部署」：GitHub Actions 在镜像推送完成后，会经 Cloudflare Tunnel 暴露的 `https://webhook.scoreplayer-myb.top/deploy?token=<WEBHOOK_TOKEN>` 向软路由的 `sp-webhook` 服务发起 `POST` 请求（带 `--retry 3` 重试）。`sp-webhook` 校验 token 通过后，在软路由本地优先执行 `docker pull` 最新阿里云 ACR 镜像；若阿里云 ACR 拉取失败，则降级拉取 GHCR 镜像，并将实际拉到的镜像 tag 为 compose 文件中的阿里云 ACR 镜像标签，再执行 `docker-compose up -d --no-deps score-player` 重启应用容器。容器内的 `docker` / `docker-compose` 直接从宿主机 `/usr/bin` 挂载，不再通过 `apk` 动态安装。该链路要求 GitHub 仓库 Secret `WEBHOOK_TOKEN` 与软路由 `.env` 中的 `WEBHOOK_TOKEN` 一致；未配置或 token 不匹配时 CI 步骤会失败，Watchtower 仍作为默认更新机制兜底。已移除原先基于 Tailscale + SSH 的部署步骤及 `SOFTROUTER_SSH_KEY`、`TAILSCALE_AUTH_KEY` 相关配置。
+
+当前最新软路由一键部署与 APK 内网优先逻辑相关提交记录（按时间顺序）如下：`70c7d3d refactor: migrate.sh downloads compose/server.py from GitHub instead of inline heredoc`、`58472fa feat: embed all credentials in migrate.sh for one-command deploy`、`439b20b feat: fill ACR credentials in migrate.sh`、`c02e89a feat: Android App LAN-first with WAN fallback`。
 
 ## 方案 B：Render（当前云端兜底）
 
