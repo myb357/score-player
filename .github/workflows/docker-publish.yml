@@ -1,9 +1,11 @@
 name: Build and Publish Docker Image
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+      - aime/1785683680-soft-router-auto-deploy
 
 permissions:
   contents: read
