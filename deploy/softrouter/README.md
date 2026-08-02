@@ -55,14 +55,14 @@ deploy/softrouter/
 
 ## 一键迁移
 
-当前推荐直接使用 `migrate.sh` 完成软路由迁移。脚本内嵌当前部署所需的 `.env`、`docker-compose.yml`、Cloudflare Tunnel 凭证与配置，并会从 `.env` 读取 `ACR_REGISTRY`、`ACR_USERNAME`、`ACR_PASSWORD` 完成阿里云 ACR 登录，然后启动完整服务栈（包含 `sp-webhook`）。
+当前推荐直接使用 `migrate.sh` 完成软路由迁移。脚本会写出基础 `.env`、Cloudflare Tunnel 凭证与配置，并通过 GitHub API 下载仓库分支 `aime/1785683680-soft-router-auto-deploy` 上的最新 `docker-compose.yml` 与 `webhook/server.py`，避免迁移脚本中的内嵌模板与仓库模板脱节。脚本会从 `.env` 读取 `GITHUB_TOKEN` 用于 GitHub API 下载；该变量可留空，公开仓库仍可访问，但会受到未认证请求速率限制。随后脚本会读取 `ACR_REGISTRY`、`ACR_USERNAME`、`ACR_PASSWORD` 完成阿里云 ACR 登录，并启动完整服务栈（包含 `sp-webhook`）。
 
 ```bash
 cd deploy/softrouter
 bash migrate.sh
 ```
 
-脚本目标运行环境为 iStoreOS / OpenWrt 系系统，需具备 `docker`、`docker-compose` 或 `docker compose` 插件，以及 `openssl` 或 `python3`。脚本要求 root 权限运行，并默认使用 `/mnt/nas/score-player-data` 作为持久化数据目录。重复执行时会覆盖脚本管理的配置文件，并通过 compose 幂等更新容器。
+脚本目标运行环境为 iStoreOS / OpenWrt 系系统，需具备 `docker`、`docker-compose` 或 `docker compose` 插件、`curl`，以及 `openssl` 或 `python3`。脚本要求 root 权限运行，并默认使用 `/mnt/nas/score-player-data` 作为持久化数据目录。重复执行时会覆盖脚本管理的配置文件，并通过 compose 幂等更新容器。
 
 迁移完成后，可用以下命令检查容器与入口健康状态：
 
@@ -125,7 +125,7 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 启用步骤：
 
-1. **软路由 `.env`**：新增 `WEBHOOK_TOKEN=<32 位随机串>`（例如 `python3 -c "import secrets;print(secrets.token_hex(16))"` 生成），随后 `docker compose up -d sp-webhook` 启动 Webhook 容器。
+1. **软路由 `.env`**：新增 `WEBHOOK_TOKEN=<32 位随机串>`（例如 `python3 -c "import secrets;print(secrets.token_hex(16))"` 生成）。如需提高 GitHub API 下载限额，可同时配置 `GITHUB_TOKEN=<GitHub token>`；该变量仅供 `migrate.sh` 下载最新 `docker-compose.yml` 与 `webhook/server.py` 使用，留空时脚本会输出警告但继续以未认证方式下载公开仓库文件。随后 `docker compose up -d sp-webhook` 启动 Webhook 容器。
 
 2. **GitHub 仓库 Secret**：在 `myb357/score-player` → Settings → Secrets and variables → Actions 中新增 Repository Secret `WEBHOOK_TOKEN`，其值必须与软路由 `.env` 中的 `WEBHOOK_TOKEN` **完全一致**。CI 中的 “Trigger soft-router deploy” 步骤会用它拼接请求。
 
@@ -148,7 +148,7 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 > 说明：`sp-webhook` 通过 `172.17.0.1:9003` 暴露给宿主机，与 cloudflared（`network_mode: host`）访问 `sp-app` 的 `172.17.0.1:9000` 方式保持一致；由于该端口只绑定在 docker0 网关地址且请求需带正确 token，不会额外暴露到局域网。token 不匹配返回 `401`，未配置 `WEBHOOK_TOKEN` 返回 `500`。
 
-> 注意：`migrate.sh` 内嵌了独立的 `docker-compose.yml` 与 Cloudflare `config.yml`。当前内嵌 compose 已包含 `sp-webhook` 服务，并通过 `/root/.docker:/root/.docker:ro` 复用宿主机 ACR 登录凭据；内嵌 `config.yml` 也已包含 webhook ingress 条目。若后续继续调整 compose 或 Cloudflare 配置，需要同步更新 `migrate.sh`，避免一键迁移产物与仓库模板脱节。
+> 注意：`migrate.sh` 不再内嵌 `docker-compose.yml` 与 `webhook/server.py`，而是在运行时通过 GitHub API 下载当前分支上的最新版本；后续调整 compose 或 webhook 服务时，只需保证仓库模板已更新。Cloudflare `config.yml` 仍由 `migrate.sh` 写出，若调整 Tunnel ingress 仍需同步更新迁移脚本。
 
 ## APK 三级端点
 
