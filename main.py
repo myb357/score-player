@@ -15,7 +15,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, Form, BackgroundTasks
@@ -58,6 +58,7 @@ B2_APP_KEY = os.environ.get("B2_APP_KEY", "")
 B2_ENDPOINT = os.environ.get("B2_ENDPOINT", "")  # e.g. s3.ca-east-006.backblazeb2.com
 B2_BUCKET = os.environ.get("B2_BUCKET", "")
 B2_REGION = os.environ.get("B2_REGION", "")  # e.g. ca-east-006 (auto-derived if empty)
+S3_PUBLIC_ENDPOINT = os.environ.get("S3_PUBLIC_ENDPOINT", "").strip()
 # Presigned URL lifetime (S3 max is 7 days = 604800s).
 PRESIGN_TTL = int(os.environ.get("B2_PRESIGN_TTL", str(7 * 24 * 3600)))
 
@@ -147,10 +148,18 @@ def b2_read_bytes(key: str) -> bytes:
         obj["Body"].close()
 
 
+def _replace_url_host(url: str, host: str) -> str:
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
 def b2_presigned_url(key: str, ttl: int = PRESIGN_TTL) -> str:
-    return get_s3().generate_presigned_url(
+    url = get_s3().generate_presigned_url(
         "get_object", Params={"Bucket": B2_BUCKET, "Key": key}, ExpiresIn=ttl
     )
+    if S3_PUBLIC_ENDPOINT:
+        url = _replace_url_host(url, S3_PUBLIC_ENDPOINT)
+    return url
 
 
 def b2_list_keys(prefix: str) -> List[str]:
