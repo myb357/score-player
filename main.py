@@ -68,6 +68,7 @@ PRESIGN_TTL = int(os.environ.get("B2_PRESIGN_TTL", str(7 * 24 * 3600)))
 #     internal address (e.g. http://minio:9000) that end devices cannot reach, so
 #     this service streams the object bytes itself (with HTTP Range support).
 MEDIA_PROXY = os.environ.get("MEDIA_PROXY", "0").strip() == "1"
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1").strip() == "1"
 
 # Fixed admin credentials. Only the PBKDF2 hash is stored (encrypted at rest).
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
@@ -624,7 +625,7 @@ async def api_login(request: Request):
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=True,
+        secure=COOKIE_SECURE,
         path="/",
     )
     return resp
