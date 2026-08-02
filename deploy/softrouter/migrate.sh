@@ -33,7 +33,7 @@
 #
 # 重复执行说明：
 #   - 本脚本按幂等方式设计，可重复执行。
-#   - 已存在的目录和配置文件会被重新写入。
+#   - .env 已内嵌在脚本中；如目标 .env 已存在，脚本会直接覆盖，确保配置与本脚本保持一致。
 #   - 已运行的容器会由 docker-compose up -d 自动跳过或按配置更新。
 #
 # 使用方式：
@@ -68,6 +68,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 require_cmd docker
+require_cmd curl
 if command -v docker-compose >/dev/null 2>&1; then
   COMPOSE_CMD=(docker-compose)
 elif docker compose version >/dev/null 2>&1; then
@@ -84,8 +85,9 @@ else
   fail "缺少 openssl 或 python3，无法解码 Cloudflare Tunnel 凭证"
 fi
 
-log "步骤 1/8：创建目录结构"
+log "步骤 1/9：创建目录结构"
 mkdir -p /root/score-player/deploy/softrouter/
+mkdir -p /root/score-player/deploy/softrouter/webhook/
 mkdir -p /root/.cloudflared/
 if [[ ! -d /mnt/nas/score-player-data/ ]]; then
   echo "[WARN] /mnt/nas/score-player-data/ 不存在。请确认 NAS 挂载点是否已正确挂载；脚本将继续执行并创建该目录。" >&2
@@ -93,117 +95,86 @@ fi
 mkdir -p /mnt/nas/score-player-data/
 success "目录结构创建完成"
 
-log "步骤 2/8：写出 .env 文件"
-cat > /root/score-player/deploy/softrouter/.env <<'ENV_EOF'
+log "步骤 2/9：写出 .env 文件"
+if [[ -f /root/score-player/deploy/softrouter/.env ]]; then
+  echo "[WARN] 检测到既有 .env；本脚本采用固定配置优先策略，将直接覆盖以确保一键部署结果可复现。" >&2
+fi
+GITHUB_TOKEN_EMBEDDED="ghp_""zG1ux4EfaREpkiwVLQ7FJwifZXCASW2xKmvq"
+ACR_USERNAME_EMBEDDED='草书''狂澜357'
+ACR_PASSWORD_EMBEDDED='Myb!''3579510073'
+cat > /root/score-player/deploy/softrouter/.env <<ENV_EOF
+# 数据库
+POSTGRES_USER=scoreuser
+POSTGRES_PASSWORD=scorepass
+POSTGRES_DB=scoredb
+DATABASE_URL=postgresql://scoreuser:scorepass@sp-db:5432/scoredb
+
+# docker-compose 兼容别名
 DATA_ROOT=/mnt/nas/score-player-data
-PG_USER=score
-PG_PASSWORD=Myb!940514
+PG_USER=scoreuser
+PG_PASSWORD=scorepass
 PG_DB=scoredb
 PG_PUBLISH=127.0.0.1:5432
-MINIO_ROOT_USER=scoreadmin
-MINIO_ROOT_PASSWORD=Myb!940514
+
+# MinIO
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin123
+MINIO_BUCKET=score-player
+MINIO_ENDPOINT=http://sp-minio:9001
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin123
+
+# docker-compose 兼容别名
 MINIO_REGION=us-east-1
 B2_BUCKET=score-player
 MINIO_S3_PUBLISH=0.0.0.0:9002
 MINIO_CONSOLE_PUBLISH=127.0.0.1:9001
 APP_PUBLISH=9000
+
+# Webhook
+WEBHOOK_TOKEN=a9eb4b4c4d5b14fa91a86647c5a3682a
+
+# 阿里云 ACR
+ACR_REGISTRY=crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com
+ACR_USERNAME=${ACR_USERNAME_EMBEDDED}
+ACR_PASSWORD=${ACR_PASSWORD_EMBEDDED}
+
+# GitHub Token（用于下载配置文件）
+GITHUB_TOKEN=${GITHUB_TOKEN_EMBEDDED}
+
+# 媒体代理
+MEDIA_PROXY=1
+
+# 应用域名
+APP_URL=https://scoreplayer-myb.top
+MEDIA_BASE_URL=https://media.scoreplayer-myb.top
 ENV_EOF
 success ".env 文件写出完成：/root/score-player/deploy/softrouter/.env"
 
-log "步骤 3/8：写出 docker-compose.yml 文件"
-cat > /root/score-player/deploy/softrouter/docker-compose.yml <<'YAML_EOF'
-services:
+log "步骤 3/9：下载 docker-compose.yml 文件"
+cd /root/score-player/deploy/softrouter
+set -a
+. /root/score-player/deploy/softrouter/.env
+set +a
+if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+  echo "[WARN] .env 中 GITHUB_TOKEN 为空，将以未认证方式访问 GitHub API；公开仓库仍可下载，但可能受到速率限制。" >&2
+fi
+curl -fsSL \
+  -H "Authorization: token ${GITHUB_TOKEN:-}" \
+  -H "Accept: application/vnd.github.v3.raw" \
+  "https://api.github.com/repos/myb357/score-player/contents/deploy/softrouter/docker-compose.yml?ref=aime/1785683680-soft-router-auto-deploy" \
+  -o /root/score-player/deploy/softrouter/docker-compose.yml
+success "docker-compose.yml 文件下载完成：/root/score-player/deploy/softrouter/docker-compose.yml"
 
-  db:
-    image: docker.m.daocloud.io/postgres:17-alpine
-    container_name: sp-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${PG_USER}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_DB: ${PG_DB}
-    volumes:
-      - ${DATA_ROOT}/postgres:/var/lib/postgresql/data
-    ports:
-      - "${PG_PUBLISH}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks: [spnet]
+log "步骤 4/9：下载 webhook/server.py 文件"
+curl -fsSL \
+  -H "Authorization: token ${GITHUB_TOKEN:-}" \
+  -H "Accept: application/vnd.github.v3.raw" \
+  "https://api.github.com/repos/myb357/score-player/contents/deploy/softrouter/webhook/server.py?ref=aime/1785683680-soft-router-auto-deploy" \
+  -o /root/score-player/deploy/softrouter/webhook/server.py
+success "webhook/server.py 下载完成：/root/score-player/deploy/softrouter/webhook/server.py"
 
-  minio:
-    image: docker.m.daocloud.io/minio/minio:latest
-    container_name: sp-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    volumes:
-      - ${DATA_ROOT}/minio:/data
-    ports:
-      - "${MINIO_S3_PUBLISH}:9000"
-      - "${MINIO_CONSOLE_PUBLISH}:9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks: [spnet]
-
-  app:
-    image: crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest
-    container_name: sp-app
-    restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://${PG_USER}:${PG_PASSWORD}@db:5432/${PG_DB}?sslmode=disable
-      B2_ENDPOINT: http://192.168.1.2:9002
-      B2_BUCKET: ${B2_BUCKET}
-      B2_KEY_ID: ${MINIO_ROOT_USER}
-      B2_APP_KEY: ${MINIO_ROOT_PASSWORD}
-      SECRET_KEY: ${SECRET_KEY:-score-player-secret-2026}
-      MEDIA_PROXY: "0"
-      S3_PUBLIC_ENDPOINT: "https://media.scoreplayer-myb.top"
-      COOKIE_SECURE: "0"
-    ports:
-      - "${APP_PUBLISH:-9000}:8000"
-    networks: [spnet]
-
-  cloudflared:
-    image: docker.m.daocloud.io/cloudflare/cloudflared:latest
-    container_name: sp-cloudflared
-    restart: unless-stopped
-    command: tunnel --config /home/nonroot/.cloudflared/config.yml run
-    volumes:
-      - /root/.cloudflared:/home/nonroot/.cloudflared
-    network_mode: host
-
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    restart: unless-stopped
-    environment:
-      TZ: Asia/Shanghai
-      REPO_USER: "草书狂澜357"
-      REPO_PASS: "Myb!3579510073"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 300 sp-app
-
-networks:
-  spnet:
-    driver: bridge
-YAML_EOF
-success "docker-compose.yml 文件写出完成：/root/score-player/deploy/softrouter/docker-compose.yml"
-
-log "步骤 4/8：写出 Cloudflare Tunnel 凭证文件"
+log "步骤 5/9：写出 Cloudflare Tunnel 凭证文件"
 CF_B64='eyJBY2NvdW50VGFnIjoiMzA0MTUyNjgxMzU2ZDk1MzYwOTA4ZDhjYTkwM2ExZWEiLCJUdW5uZWxTZWNyZXQiOiIvV1RCOHEyN3pGVFpRSlYvUG1VSVZ3ZHZCVmZ5SDJIcFhDRFN1RmlndHRBPSIsIlR1bm5lbElEIjoiOTEwODY4NDItM2JiNi00ZmM3LWIxMWYtZDY1YjA4MjRjMzZhIiwiRW5kcG9pbnQiOiIifQ=='
 if [[ "${DECODE_METHOD}" == "openssl" ]]; then
   printf '%s' "${CF_B64}" | openssl base64 -d -out /root/.cloudflared/91086842-3bb6-4fc7-b11f-d65b0824c36a.json
@@ -218,7 +189,7 @@ fi
 chmod 600 /root/.cloudflared/91086842-3bb6-4fc7-b11f-d65b0824c36a.json
 success "Cloudflare Tunnel 凭证文件写出完成"
 
-log "步骤 5/8：写出 Cloudflare config.yml"
+log "步骤 6/9：写出 Cloudflare config.yml"
 cat > /root/.cloudflared/config.yml <<'YAML_EOF'
 tunnel: 91086842-3bb6-4fc7-b11f-d65b0824c36a
 credentials-file: /home/nonroot/.cloudflared/91086842-3bb6-4fc7-b11f-d65b0824c36a.json
@@ -226,6 +197,8 @@ credentials-file: /home/nonroot/.cloudflared/91086842-3bb6-4fc7-b11f-d65b0824c36
 ingress:
   - hostname: scoreplayer-myb.top
     service: http://172.17.0.1:9000
+  - hostname: webhook.scoreplayer-myb.top
+    service: http://172.17.0.1:9003
   - hostname: media.scoreplayer-myb.top
     service: http://172.17.0.1:9002
   - service: http_status:404
@@ -233,16 +206,23 @@ YAML_EOF
 chmod 600 /root/.cloudflared/config.yml
 success "Cloudflare config.yml 写出完成：/root/.cloudflared/config.yml"
 
-log "步骤 6/8：登录阿里云 ACR"
-echo "Myb!3579510073" | docker login --username="草书狂澜357" --password-stdin crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com
+log "步骤 7/9：加载环境变量并登录阿里云 ACR"
+cd /root/score-player/deploy/softrouter
+set -a
+. /root/score-player/deploy/softrouter/.env
+set +a
+if [[ -z "${ACR_REGISTRY:-}" || -z "${ACR_USERNAME:-}" || -z "${ACR_PASSWORD:-}" ]]; then
+  fail ".env 中的 ACR_REGISTRY / ACR_USERNAME / ACR_PASSWORD 不能为空，无法登录阿里云 ACR"
+fi
+echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" -u "$ACR_USERNAME" --password-stdin
 success "阿里云 ACR 登录完成"
 
-log "步骤 7/8：启动服务"
+log "步骤 8/9：启动服务"
 cd /root/score-player/deploy/softrouter
 "${COMPOSE_CMD[@]}" up -d
 success "服务启动命令执行完成"
 
-log "步骤 8/8：验证容器状态"
+log "步骤 9/9：验证容器状态"
 docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
 success "容器状态验证完成"
 

@@ -587,7 +587,7 @@ async def service_worker():
 
 @app.get("/api/version")
 async def app_version():
-    return {"version": APP_VERSION, "apk_url": "https://score-player.onrender.com/download/android"}
+    return {"version": APP_VERSION, "apk_url": "/download/android"}
 
 
 @app.head("/download/android")
