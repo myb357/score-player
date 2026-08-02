@@ -162,7 +162,7 @@ fi
 curl -fsSL \
   -H "Authorization: token ${GITHUB_TOKEN:-}" \
   -H "Accept: application/vnd.github.v3.raw" \
-  "https://api.github.com/repos/myb357/score-player/contents/deploy/softrouter/docker-compose.yml?ref=aime/1785683680-soft-router-auto-deploy" \
+  "https://api.github.com/repos/myb357/score-player/contents/deploy/softrouter/docker-compose.yml?ref=main" \
   -o /root/score-player/deploy/softrouter/docker-compose.yml
 success "docker-compose.yml 文件下载完成：/root/score-player/deploy/softrouter/docker-compose.yml"
 
@@ -170,7 +170,7 @@ log "步骤 4/9：下载 webhook/server.py 文件"
 curl -fsSL \
   -H "Authorization: token ${GITHUB_TOKEN:-}" \
   -H "Accept: application/vnd.github.v3.raw" \
-  "https://api.github.com/repos/myb357/score-player/contents/deploy/softrouter/webhook/server.py?ref=aime/1785683680-soft-router-auto-deploy" \
+  "https://api.github.com/repos/myb357/score-player/contents/deploy/softrouter/webhook/server.py?ref=main" \
   -o /root/score-player/deploy/softrouter/webhook/server.py
 success "webhook/server.py 下载完成：/root/score-player/deploy/softrouter/webhook/server.py"
 
