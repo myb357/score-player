@@ -30,7 +30,7 @@ WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 # 与 CI / migrate.sh 保持一致：应用镜像主来源为阿里云 ACR
 IMAGE = "crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest"
 COMPOSE_FILE = "/root/score-player/deploy/softrouter/docker-compose.yml"
-COMPOSE_SERVICE = "sp-app"
+COMPOSE_SERVICE = "score-player"
 
 
 def log(msg):
@@ -41,48 +41,13 @@ def log(msg):
 def compose_base_cmd():
     """
     探测可用的 compose 命令：
-      - 优先使用独立二进制 `docker-compose`（v1）；
+      - 优先使用独立二进制 `docker-compose`（v1，软路由 iStoreOS 默认）；
       - 回退到 Docker CLI 插件 `docker compose`（v2）。
-    这样无论软路由上装的是 v1 还是 v2 都能正常执行。
+    宿主机二进制通过 docker-compose.yml volumes 直接挂载进容器，无需安装。
     """
     if shutil.which("docker-compose"):
         return ["docker-compose"]
     return ["docker", "compose"]
-
-
-def ensure_docker_tooling():
-    """
-    python:3.11-alpine 基础镜像不自带 docker / docker-compose，
-    这里在服务启动时尽力通过 apk 安装 docker-cli 及其 compose 插件。
-    失败不阻断服务启动（可能镜像已内置或网络暂时不可用），仅记录日志。
-    """
-    if shutil.which("docker") and (shutil.which("docker-compose") or shutil.which("docker")):
-        # docker 已存在即认为满足基本条件（compose 由 compose_base_cmd 再兜底）
-        if shutil.which("docker-compose") or _docker_compose_plugin_ok():
-            return
-    if not shutil.which("apk"):
-        log("WARN: 未检测到 apk，且缺少 docker 工具链，请确保运行环境已内置 docker/docker-compose")
-        return
-    try:
-        log("正在通过 apk 安装 docker-cli / docker-cli-compose ...")
-        subprocess.run(
-            ["apk", "add", "--no-cache", "docker-cli", "docker-cli-compose"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        log("docker 工具链安装完成")
-    except Exception as e:  # noqa: BLE001 - 最佳努力安装，失败不阻断
-        log(f"WARN: 安装 docker 工具链失败（将继续启动，部署时可能报错）：{e}")
-
-
-def _docker_compose_plugin_ok():
-    try:
-        subprocess.run(["docker", "compose", "version"], check=True,
-                       capture_output=True, text=True)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def run_deploy():
@@ -169,7 +134,8 @@ class DeployHandler(BaseHTTPRequestHandler):
 def main():
     if not WEBHOOK_TOKEN:
         log("WARN: 启动时未检测到 WEBHOOK_TOKEN 环境变量，部署请求会被拒绝（500）")
-    ensure_docker_tooling()
+    log(f"docker: {shutil.which('docker') or '未找到'}")
+    log(f"docker-compose: {shutil.which('docker-compose') or '未找到'}")
     server = ThreadingHTTPServer((HOST, PORT), DeployHandler)
     log(f"webhook 服务已启动，监听 {HOST}:{PORT}，路由 POST /deploy")
     try:

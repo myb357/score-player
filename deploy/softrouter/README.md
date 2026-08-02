@@ -116,10 +116,10 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
    cloudflared(host) ──http://172.17.0.1:9003──▶ sp-webhook 容器 (server.py)
                               │  token 校验通过
                               ▼
-   docker pull <阿里云 ACR 镜像> ; docker-compose up -d --no-deps sp-app
+   docker pull <阿里云 ACR 镜像> ; docker-compose up -d --no-deps score-player
 ```
 
-`sp-webhook` 服务由 `webhook/server.py`（Python 标准库实现，监听 `9003`）提供，`docker-compose.yml` 中以 `python:3.11-alpine` 挂载运行；`server.py` 启动时会自动通过 `apk` 安装容器内所需的 `docker-cli` / `docker-cli-compose`（基础镜像不自带）。
+`sp-webhook` 服务由 `webhook/server.py`（Python 标准库实现，监听 `9003`）提供，`docker-compose.yml` 中以 `python:3.11-alpine` 挂载运行；容器会直接挂载宿主机 `/usr/bin/docker` 与 `/usr/bin/docker-compose` 二进制，并在启动日志中打印实际探测到的路径。该方案不再在容器启动时通过 `apk` 安装 docker 工具链，避免 iStoreOS 环境下安装慢或外网访问受阻。
 
 启用步骤：
 

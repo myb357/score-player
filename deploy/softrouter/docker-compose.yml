@@ -96,11 +96,12 @@ services:
   # ---- Webhook 自动部署接收器 ----
   # GitHub Actions 推送镜像后，通过 Cloudflare Tunnel
   # (webhook.scoreplayer-myb.top -> http://172.17.0.1:9003) POST /deploy 触发，
-  # 由本容器在软路由本地执行 docker pull + docker-compose up -d --no-deps sp-app。
+  # 由本容器在软路由本地执行 docker pull + docker-compose up -d --no-deps score-player。
   #
   # 说明：
-  #  - 使用 python:3.11-alpine 基础镜像 + 挂载 server.py，server.py 启动时会
-  #    通过 apk 自动安装 docker-cli / docker-cli-compose（基础镜像不自带）。
+  #  - 使用 python:3.11-alpine 基础镜像 + 挂载 server.py。
+  #  - 直接挂载宿主机的 docker / docker-compose 二进制，无需在容器内安装任何包，
+  #    启动速度快，也不依赖容器内能访问外网。
   #  - 挂载 docker.sock 以便容器内调用宿主机 Docker；挂载 /root/score-player
   #    以便读取部署所用的 docker-compose.yml。
   #  - cloudflared 以 network_mode: host 运行并通过 172.17.0.1 访问宿主机端口，
@@ -115,6 +116,9 @@ services:
       - ./webhook/server.py:/app/server.py:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /root/score-player:/root/score-player:ro
+      # 直接挂载宿主机二进制，无需 apk install
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /usr/bin/docker-compose:/usr/bin/docker-compose:ro
     working_dir: /app
     command: python server.py
     environment:
