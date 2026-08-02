@@ -44,10 +44,7 @@ jobs:
             ghcr.io/myb357/score-player:latest
             crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest
 
-      # 镜像推送完成后，通过 Cloudflare Tunnel 暴露的 Webhook 主动触发软路由部署。
-      # 需要在仓库 Secrets 中配置 WEBHOOK_TOKEN（与软路由 .env 中的 WEBHOOK_TOKEN 一致）。
-      - name: Trigger soft router deploy via Webhook
+      - name: Trigger soft-router deploy
+        continue-on-error: true
         run: |
-          curl -f -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${{ secrets.WEBHOOK_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            --retry 3 --retry-delay 5 --max-time 60
+          curl -f -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${{ secrets.WEBHOOK_TOKEN }}"

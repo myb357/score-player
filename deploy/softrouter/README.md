@@ -103,7 +103,7 @@ COOKIE_SECURE=0
 
 GitHub Actions 会把最新应用镜像同时推送到两个 registry：阿里云 ACR `crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest` 为软路由主镜像源；GHCR `ghcr.io/myb357/score-player:latest` 仅作为阿里云 ACR 不可达时的备用来源。
 
-Watchtower 在软路由上以 300 秒间隔运行，持续检查 `sp-app` 的新镜像并自动更新。因此正常发布流程是推送代码到 GitHub，等待 Actions 构建并推送镜像，随后由 Watchtower 自动在软路由拉取并替换应用容器。
+CI/CD 流程为：推送代码到 GitHub 后，Actions 构建并推送镜像；镜像推送完成后，立即执行 `Trigger soft-router deploy` 步骤，通过 `curl -f -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${{ secrets.WEBHOOK_TOKEN }}"` 触发软路由 Webhook。该步骤配置了 `continue-on-error: true`，因此 Webhook 临时不可用或返回失败不会导致整条 CI 失败；软路由上的 Watchtower 仍会以 300 秒间隔作为兜底，持续检查 `sp-app` 的新镜像并自动更新。
 
 ## Webhook 自动部署（Cloudflare Tunnel 触发）
 
@@ -127,7 +127,7 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 1. **软路由 `.env`**：新增 `WEBHOOK_TOKEN=<32 位随机串>`（例如 `python3 -c "import secrets;print(secrets.token_hex(16))"` 生成），随后 `docker compose up -d sp-webhook` 启动 Webhook 容器。
 
-2. **GitHub 仓库 Secret**：在 `myb357/score-player` → Settings → Secrets and variables → Actions 中新增 Repository Secret `WEBHOOK_TOKEN`，其值必须与软路由 `.env` 中的 `WEBHOOK_TOKEN` **完全一致**。CI 中的 “Trigger soft router deploy via Webhook” 步骤会用它拼接请求。
+2. **GitHub 仓库 Secret**：在 `myb357/score-player` → Settings → Secrets and variables → Actions 中新增 Repository Secret `WEBHOOK_TOKEN`，其值必须与软路由 `.env` 中的 `WEBHOOK_TOKEN` **完全一致**。CI 中的 “Trigger soft-router deploy” 步骤会用它拼接请求。
 
 3. **Cloudflare Tunnel 配置**：在软路由 `/root/.cloudflared/config.yml` 的 `ingress` 中，为 webhook 子域名新增一条转发规则，放在 `scoreplayer-myb.top` 条目之后、`http_status:404` 之前：
 
