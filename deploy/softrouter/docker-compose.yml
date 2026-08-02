@@ -115,6 +115,7 @@ services:
     volumes:
       - ./webhook/server.py:/app/server.py:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker:/root/.docker:ro
       - /root/score-player:/root/score-player:ro
       # 直接挂载宿主机二进制，无需 apk install
       - /usr/bin/docker:/usr/bin/docker:ro

@@ -109,6 +109,10 @@ MINIO_S3_PUBLISH=0.0.0.0:9002
 MINIO_CONSOLE_PUBLISH=127.0.0.1:9001
 APP_PUBLISH=9000
 
+ACR_REGISTRY=crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com
+ACR_USERNAME=
+ACR_PASSWORD=
+
 # ---- Webhook 自动部署 token（必须与 GitHub 仓库 Secret WEBHOOK_TOKEN 一致，留空请手动填写）----
 WEBHOOK_TOKEN=
 ENV_EOF
@@ -222,6 +226,7 @@ services:
     volumes:
       - ./webhook/server.py:/app/server.py:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker:/root/.docker:ro
       - /root/score-player:/root/score-player:ro
     working_dir: /app
     command: python server.py
@@ -459,8 +464,15 @@ YAML_EOF
 chmod 600 /root/.cloudflared/config.yml
 success "Cloudflare config.yml 写出完成：/root/.cloudflared/config.yml"
 
-log "步骤 7/9：登录阿里云 ACR"
-echo "Myb!3579510073" | docker login --username="草书狂澜357" --password-stdin crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com
+log "步骤 7/9：加载环境变量并登录阿里云 ACR"
+cd /root/score-player/deploy/softrouter
+set -a
+. /root/score-player/deploy/softrouter/.env
+set +a
+if [[ -z "${ACR_REGISTRY:-}" || -z "${ACR_USERNAME:-}" || -z "${ACR_PASSWORD:-}" ]]; then
+  fail ".env 中的 ACR_REGISTRY / ACR_USERNAME / ACR_PASSWORD 不能为空，无法登录阿里云 ACR"
+fi
+echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" -u "$ACR_USERNAME" --password-stdin
 success "阿里云 ACR 登录完成"
 
 log "步骤 8/9：启动服务"

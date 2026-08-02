@@ -55,7 +55,7 @@ deploy/softrouter/
 
 ## 一键迁移
 
-当前推荐直接使用 `migrate.sh` 完成软路由迁移。脚本内嵌当前部署所需的 `.env`、`docker-compose.yml`、Cloudflare Tunnel 凭证与配置，并会登录阿里云 ACR、启动完整服务栈。
+当前推荐直接使用 `migrate.sh` 完成软路由迁移。脚本内嵌当前部署所需的 `.env`、`docker-compose.yml`、Cloudflare Tunnel 凭证与配置，并会从 `.env` 读取 `ACR_REGISTRY`、`ACR_USERNAME`、`ACR_PASSWORD` 完成阿里云 ACR 登录，然后启动完整服务栈（包含 `sp-webhook`）。
 
 ```bash
 cd deploy/softrouter
@@ -121,7 +121,7 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
    docker-compose up -d --no-deps score-player
 ```
 
-`sp-webhook` 服务由 `webhook/server.py`（Python 标准库实现，监听 `9003`）提供，`docker-compose.yml` 中以 `python:3.11-alpine` 挂载运行；容器会直接挂载宿主机 `/usr/bin/docker` 与 `/usr/bin/docker-compose` 二进制，并在启动日志中打印实际探测到的路径。该方案不再在容器启动时通过 `apk` 安装 docker 工具链，避免 iStoreOS 环境下安装慢或外网访问受阻。
+`sp-webhook` 服务由 `webhook/server.py`（Python 标准库实现，监听 `9003`）提供，`docker-compose.yml` 中以 `python:3.11-alpine` 挂载运行；容器会直接挂载宿主机 `/usr/bin/docker` 与 `/usr/bin/docker-compose` 二进制，并挂载宿主机 `/root/.docker` 以复用 `migrate.sh` 写入的 ACR 登录凭据，保证容器内 `docker pull` 可读取宿主机认证信息。该方案不再在容器启动时通过 `apk` 安装 docker 工具链，避免 iStoreOS 环境下安装慢或外网访问受阻。
 
 启用步骤：
 
@@ -148,7 +148,7 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 > 说明：`sp-webhook` 通过 `172.17.0.1:9003` 暴露给宿主机，与 cloudflared（`network_mode: host`）访问 `sp-app` 的 `172.17.0.1:9000` 方式保持一致；由于该端口只绑定在 docker0 网关地址且请求需带正确 token，不会额外暴露到局域网。token 不匹配返回 `401`，未配置 `WEBHOOK_TOKEN` 返回 `500`。
 
-> 注意：`migrate.sh` 内嵌了独立的 `docker-compose.yml` 与 Cloudflare `config.yml`。若通过重新执行 `migrate.sh` 来重建软路由栈，需要同步在脚本内嵌的 compose 中加入 `sp-webhook` 服务、在内嵌 `config.yml` 中加入上面的 webhook ingress 条目，否则 Webhook 服务不会随 `migrate.sh` 一起部署。
+> 注意：`migrate.sh` 内嵌了独立的 `docker-compose.yml` 与 Cloudflare `config.yml`。当前内嵌 compose 已包含 `sp-webhook` 服务，并通过 `/root/.docker:/root/.docker:ro` 复用宿主机 ACR 登录凭据；内嵌 `config.yml` 也已包含 webhook ingress 条目。若后续继续调整 compose 或 Cloudflare 配置，需要同步更新 `migrate.sh`，避免一键迁移产物与仓库模板脱节。
 
 ## APK 三级端点
 
