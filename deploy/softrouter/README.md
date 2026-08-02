@@ -9,7 +9,7 @@
    Cloudflare Tunnel     │                         │                                            │
                          │                         └──▶ sp-minio :9002       [主对象存储]       │
    媒体域名 ─────────────▶│  media.scoreplayer-myb.top ─────────▶ sp-minio :9002                 │
-   MinIO 直连            │                                                                      │
+   Webhook ─────────────▶│  webhook.scoreplayer-myb.top ───────▶ sp-webhook :9003               │
    Watchtower            │  watchtower 每 5 分钟检查镜像并更新 sp-app                            │
                          └──────────────────────────────────────────────────────────────────────┘
 
@@ -21,8 +21,9 @@
 
 | 层级 | 地址 | 说明 |
 |---|---|---|
-| 主入口 | `https://scoreplayer-myb.top` | Cloudflare Tunnel，Cloudflare DNS 已配置 |
-| 媒体域名 | `https://media.scoreplayer-myb.top` | Cloudflare Tunnel 指向本地 MinIO S3 端口，绕过 app 代理 |
+| 主入口 | `https://scoreplayer-myb.top` | Cloudflare Tunnel，转发到 `http://172.17.0.1:9000` |
+| 媒体域名 | `https://media.scoreplayer-myb.top` | Cloudflare Tunnel，转发到 `http://172.17.0.1:9002`，指向本地 MinIO S3 端口并绕过 app 代理 |
+| Webhook | `https://webhook.scoreplayer-myb.top` | Cloudflare Tunnel，转发到 `http://172.17.0.1:9003`，触发软路由自动部署 |
 | 备用入口 | `https://istoreos.tail11098d.ts.net` | Tailscale 备用访问路径 |
 | 最终兜底 | `https://score-player.onrender.com` | Render 云端兜底服务 |
 
@@ -58,7 +59,7 @@ deploy/softrouter/
 在软路由上直接执行以下命令即可完成迁移与启动：
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/myb357/score-player/aime/1785683680-soft-router-auto-deploy/deploy/softrouter/migrate.sh")
+bash <(curl -fsSL "https://raw.githubusercontent.com/myb357/score-player/main/deploy/softrouter/migrate.sh")
 ```
 
 `migrate.sh` 已内嵌完整部署所需凭据与配置，包括 DB、MinIO、ACR、Webhook、GitHub Token、Cloudflare Tunnel 等内容。用户无需手动准备 `.env`，也无需先克隆仓库或手动下载 compose 文件，直接运行上述命令即可。若目标 `.env` 已存在，脚本会按固定配置优先策略直接覆盖，以确保一键部署结果可复现。
@@ -67,12 +68,12 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/myb357/score-player/aime/17
 
 1. 创建目录结构（`/root/score-player/deploy/softrouter` 等）。
 2. 写出 `.env`（含 DB、MinIO、ACR、Webhook、GitHub Token 等全部凭据）。
-3. 从 GitHub 下载最新 `docker-compose.yml`。
-4. 从 GitHub 下载最新 `webhook/server.py`。
+3. 从 GitHub `main` 分支下载最新 `docker-compose.yml`。
+4. 从 GitHub `main` 分支下载最新 `webhook/server.py`。
 5. 写出 Cloudflare Tunnel 凭证文件。
 6. 写出 Cloudflare `config.yml`。
 7. ACR 登录。
-8. 执行 `docker-compose up -d`，启动 `db`、`minio`、`score-player`、`sp-webhook` 等服务。
+8. 执行 `docker-compose up -d`，启动 `db`、`minio`、`score-player`、`sp-webhook`、`cloudflared` 等服务。
 9. 验证容器状态。
 
 脚本目标运行环境为 iStoreOS / OpenWrt 系系统，需具备 `docker`、`docker-compose` 或 `docker compose` 插件、`curl`，以及 `openssl` 或 `python3`。脚本要求 root 权限运行，并默认使用 `/mnt/nas/score-player-data` 作为持久化数据目录。重复执行时会覆盖脚本管理的配置文件，并通过 compose 幂等更新容器。
@@ -116,7 +117,7 @@ COOKIE_SECURE=0
 
 GitHub Actions 会把最新应用镜像同时推送到两个 registry：阿里云 ACR `crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest` 为软路由主镜像源；GHCR `ghcr.io/myb357/score-player:latest` 仅作为阿里云 ACR 不可达时的备用来源。
 
-CI/CD 流程为：推送代码到 GitHub 后，Actions 构建并推送镜像；镜像推送完成后，立即执行 `Trigger soft-router deploy` 步骤，通过 `curl --fail-with-body --retry 3 --retry-delay 5 --retry-all-errors -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${WEBHOOK_TOKEN}"` 触发软路由 Webhook，并附带一段诊断用 JSON body。`sp-webhook` 以 query param 中的 `token` 为准并会读取丢弃 body，因此当前请求格式与 `server.py` 期望一致。该步骤配置了 `continue-on-error: true`，因此 Webhook 临时不可用或返回失败不会导致整条 CI 失败；软路由上的 Watchtower 仍会以 300 秒间隔作为兜底，持续检查 `sp-app` 的新镜像并自动更新。
+CI/CD 流程为：推送代码到 `main` 后，GitHub Actions `docker-publish.yml` 使用 JDK 17 先构建 Android APK（Release 失败时 fallback 到 Debug），再把 APK 复制到 `static/android/score-player.apk` 与 `score_app/static/android/score-player.apk`，随后构建并推送 Docker 镜像到阿里云 ACR 与 GHCR。Android Gradle 配置已统一 Java compileOptions 与 Kotlin jvmToolchain 为 JVM 17，当前 APK 版本为 v1.3.3（`versionCode=15`，`versionName=1.3.3`），网页下载入口为 `/download/android`。镜像推送完成后，CI 立即执行 `Trigger soft-router deploy` 步骤，通过 `curl --fail-with-body --show-error --silent --retry 3 --retry-delay 5 --retry-all-errors -X POST "https://webhook.scoreplayer-myb.top/deploy?token=${WEBHOOK_TOKEN}"` 触发软路由 Webhook，并附带一段诊断用 JSON body。随后 CI 执行 `Trigger Render deploy` 步骤，调用 `https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys` 并通过 `RENDER_API_KEY` 鉴权，触发 Render 云端兜底服务重新部署。`sp-webhook` 以 query param 中的 `token` 为准并会读取丢弃 body，因此当前请求格式与 `server.py` 期望一致。软路由步骤配置了 `continue-on-error: true`，因此 Webhook 临时不可用或返回失败不会导致整条 CI 失败；Render 步骤默认要求 API 调用成功。软路由上的 Watchtower 仍会以 300 秒间隔作为兜底，持续检查 `sp-app` 的新镜像并自动更新。
 
 ## Webhook 自动部署（Cloudflare Tunnel 触发）
 
@@ -161,20 +162,11 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 > 说明：`sp-webhook` 通过 `172.17.0.1:9003` 暴露给宿主机，与 cloudflared（`network_mode: host`）访问 `sp-app` 的 `172.17.0.1:9000` 方式保持一致；由于该端口只绑定在 docker0 网关地址且请求需带正确 token，不会额外暴露到局域网。token 不匹配返回 `401`，未配置 `WEBHOOK_TOKEN` 返回 `500`。
 
-> 注意：`migrate.sh` 不再内嵌 `docker-compose.yml` 与 `webhook/server.py`，而是在运行时通过 GitHub API 下载当前分支上的最新版本；后续调整 compose 或 webhook 服务时，只需保证仓库模板已更新。Cloudflare `config.yml` 仍由 `migrate.sh` 写出，若调整 Tunnel ingress 仍需同步更新迁移脚本。
+> 注意：`migrate.sh` 不再内嵌 `docker-compose.yml` 与 `webhook/server.py`，而是在运行时通过 GitHub API 下载 `main` 分支上的最新版本；后续调整 compose 或 webhook 服务时，只需保证仓库模板已更新并合入 `main`。Cloudflare `config.yml` 仍由 `migrate.sh` 写出，若调整 Tunnel ingress 仍需同步更新迁移脚本。
 
-## 最新提交记录
+## 分支与版本状态
 
-以下为当前软路由一键部署与 APK 内网优先逻辑相关的最新提交记录（按时间顺序）：
-
-| Commit | 说明 |
-|---|---|
-| `cc48f2e` | `docs: sync all docs to latest state (one-command deploy + LAN fallback)` |
-| `c02e89a` | `feat: Android App LAN-first with WAN fallback` |
-| `[commit]` | `fix: align Android version 1.3.3 and enable CI auto-build for APK` |
-| `439b20b` | `feat: fill ACR credentials in migrate.sh` |
-| `58472fa` | `feat: embed all credentials in migrate.sh for one-command deploy` |
-| `70c7d3d` | `refactor: migrate.sh downloads compose/server.py from GitHub instead of inline heredoc` |
+当前生产发布统一走 `main` 分支，旧软路由自动部署分支已删除；部署文档、一键迁移命令、迁移脚本下载源和 GitHub Actions 分支触发均应保持在 `main`。当前 Android APK 版本为 v1.3.3（`versionCode=15`，`versionName=1.3.3`），软路由部署通过 ACR 主镜像源、GHCR 备用镜像源和 Cloudflare Webhook 主动触发完成。
 
 ## APK 内网优先端点
 
