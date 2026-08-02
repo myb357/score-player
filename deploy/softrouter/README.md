@@ -150,17 +150,16 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 > 注意：`migrate.sh` 不再内嵌 `docker-compose.yml` 与 `webhook/server.py`，而是在运行时通过 GitHub API 下载当前分支上的最新版本；后续调整 compose 或 webhook 服务时，只需保证仓库模板已更新。Cloudflare `config.yml` 仍由 `migrate.sh` 写出，若调整 Tunnel ingress 仍需同步更新迁移脚本。
 
-## APK 三级端点
+## APK 内网优先端点
 
-Android APK 的离线 WebView 资源使用三级端点故障切换：
+Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址：
 
-```js
-API_PRIMARY = 'https://scoreplayer-myb.top'
-API_FALLBACK = 'https://istoreos.tail11098d.ts.net'
-API_FALLBACK2 = 'https://score-player.onrender.com'
+```text
+内网优先入口：http://192.168.1.2:9000
+外网兜底入口：https://scoreplayer-myb.top
 ```
 
-冷启动时 APK 优先探测 Cloudflare Tunnel 主入口，失败后切换到 Tailscale 备用入口，再失败才切换到 Render。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。
+冷启动时 APK 会对 `http://192.168.1.2:9000` 发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，不可达时加载外网 Cloudflare Tunnel 地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()` 与 `AndroidBridge.isInternalNetworkReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。
 
 ## 历史同步任务说明
 

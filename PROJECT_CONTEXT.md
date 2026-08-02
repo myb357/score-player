@@ -18,7 +18,7 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 软路由当前关键运行环境变量包括 `MEDIA_PROXY=1`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`、`DATABASE_URL=postgresql://score:<password>@db:5432/scoredb?sslmode=disable`、`B2_BUCKET=score-player`、`B2_REGION=us-east-1`。其中 `MEDIA_PROXY=1` 是软路由本地 MinIO 模式的正确取值：本地 MinIO 生成的预签名 URL 指向内网 `minio:9000`，终端设备（平板/浏览器）无法直连，因此由 app 经 `/api/media` 回源转发媒体字节流（支持 HTTP Range）；`MEDIA_PROXY=0` 仅用于 Render / Backblaze B2 公网对象存储模式，此时才会直接使用 `S3_PUBLIC_ENDPOINT` 作为 S3 client endpoint 并 302 跳转到公网预签名 URL。
 
-Android APK 使用三级端点：`API_PRIMARY='https://scoreplayer-myb.top'`、`API_FALLBACK='https://istoreos.tail11098d.ts.net'`、`API_FALLBACK2='https://score-player.onrender.com'`。离线 APK 会先探测 Cloudflare Tunnel 主入口，再切换到 Tailscale，最后才使用 Render 兜底。
+Android APK 的原生入口使用“内网优先、外网兜底”策略：启动或 WebView 首次加载前，Kotlin 侧会对 `http://192.168.1.2:9000` 发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；若内网可达则直接加载 `http://192.168.1.2:9000`，否则加载外网入口 `https://scoreplayer-myb.top`。每次 App 进入前台都会重新探测，以适配家庭 Wi-Fi 与外出网络切换。探测结果由原生侧控制 WebView URL，并通过 `AndroidBridge.getActiveBaseUrl()` 与 `AndroidBridge.isInternalNetworkReachable()` 暴露给页面按需读取。
 
 一键迁移脚本为 `deploy/softrouter/migrate.sh`。脚本内嵌软路由运行所需 `.env` 配置和 Cloudflare Tunnel 凭证，在目标软路由上执行 `bash migrate.sh` 即可直接写出 `/root/score-player/deploy/softrouter/.env`、`docker-compose.yml`、Cloudflare 配置，登录阿里云 ACR，并启动完整本地栈；若目标 `.env` 已存在，脚本采用固定配置优先策略直接覆盖。
 

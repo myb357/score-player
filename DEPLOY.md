@@ -59,15 +59,14 @@ Railway 是历史部署方案，仓库中的 `railway.json` 保留用于记录�
 
 ## APK 端点配置
 
-Android APK 当前使用三级端点：
+Android APK 当前由原生 Kotlin 入口控制 WebView 加载地址，采用内网优先策略：
 
-```js
-API_PRIMARY = 'https://scoreplayer-myb.top'
-API_FALLBACK = 'https://istoreos.tail11098d.ts.net'
-API_FALLBACK2 = 'https://score-player.onrender.com'
+```text
+内网优先入口：http://192.168.1.2:9000
+外网兜底入口：https://scoreplayer-myb.top
 ```
 
-离线 APK 会优先访问 Cloudflare Tunnel 主入口，失败后切换到 Tailscale，最后才切到 Render。浏览器 Web 访问使用同源相对路径，不依赖该三级端点配置。
+App 启动或 WebView 首次加载前，会在原生侧对 `http://192.168.1.2:9000` 发起 HTTP HEAD 探测，连接和读取超时均为 2 秒。探测成功时 WebView 加载内网地址；探测失败时加载外网地址。每次 App 进入前台都会重新探测，以便在家庭 Wi-Fi 与外出网络之间自动切换。该逻辑位于 Android Kotlin 侧，不依赖 WebView JS 跨域请求；当前激活地址和内网可达状态也通过 `AndroidBridge.getActiveBaseUrl()`、`AndroidBridge.isInternalNetworkReachable()` 提供给页面按需读取。浏览器 Web 访问使用同源相对路径，不依赖该 APK 端点选择逻辑。
 
 ## 修改登录密码
 
