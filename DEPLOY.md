@@ -41,7 +41,7 @@
 2. 打开 https://render.com ，用 GitHub 登录。
 3. 点击 **New +** → **Blueprint**，选择该仓库；Render 会自动读取 `render.yaml` 创建 Web Service。
    - 或选择 **New +** → **Web Service** → **Docker**，手动指向 `Dockerfile`。
-4. 等待构建完成，即可得到固定域名，例如：`https://score-app-production-953e.up.railway.app`（HTTPS，长期有效）。
+4. 等待构建完成，即可得到固定域名，例如：`https://score-player.onrender.com`（HTTPS，长期有效）。
 
 ### 套餐说明（重要）
 | 套餐 | 费用 | 数据持久化 | 常驻 |
@@ -74,7 +74,7 @@ print("ADMIN_SALT=", salt); print("ADMIN_HASH=", h)
 ## ⚠️ 故障排查：Render 登录报错 500 / 数据库连不上（IPv6 问题）
 
 ### 现象
-- `https://score-app-production-953e.up.railway.app/api/v1/ping` 返回 200（应用本身正常）；
+- `https://score-player.onrender.com/api/v1/ping` 返回 200（应用本身正常）；
 - 但 `/api/login` 返回 **500 Internal Server Error**，网页登录失败。
 
 ### 根因

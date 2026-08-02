@@ -14,7 +14,7 @@
   <script>
     /* ---- 方案B: offline/web dual-mode runtime ---- */
     var IS_FILE = location.protocol === 'file:';
-    var API_BASE = IS_FILE ? 'https://score-app-production-953e.up.railway.app' : '';
+    var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
     function safeStorageGet(key) {
       try { return window.localStorage ? (localStorage.getItem(key) || '') : ''; } catch (e) { return ''; }
     }
@@ -387,7 +387,7 @@
       setTimeout(() => t.remove(), 2600);
     }
 
-    const CURRENT_APP_VERSION = '1.3.2';
+    const CURRENT_APP_VERSION = '1.3.3';
     function compareVersions(remote, current) {
       const remoteParts = String(remote || '').split('.');
       const currentParts = String(current || '').split('.');

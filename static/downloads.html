@@ -14,7 +14,7 @@
   <script>
     /* ---- 方案B: offline/web dual-mode runtime ---- */
     var IS_FILE = location.protocol === 'file:';
-    var API_BASE = IS_FILE ? 'https://score-app-production-953e.up.railway.app' : '';
+    var API_BASE = IS_FILE ? 'https://score-player.onrender.com' : '';
     function authToken() { try { return localStorage.getItem('auth_token') || ''; } catch (e) { return ''; } }
     function clearAuthToken() { try { localStorage.removeItem('auth_token'); } catch (e) {} }
     function mediaUrl(u) { return (u && u.charAt(0) === '/') ? (API_BASE + u) : u; }

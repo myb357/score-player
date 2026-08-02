@@ -10,9 +10,9 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 ## 2. 部署信息
 
-公网地址历史上为 `https://score-app-production-953e.up.railway.app`，当前迁移目标为 Railway，迁移完成后应以 Railway 生成的公网 HTTPS 域名为准。
+公网地址为 `https://score-player.onrender.com`，当前迁移目标为 Render，迁移完成后应以 Render 公网 HTTPS 域名为准。
 
-部署平台从 Render 迁移到 Railway。Railway 通过 GitHub 仓库自动部署，仓库根目录的 `railway.json` 指定使用根目录 `Dockerfile` 构建，并以 `/api/v1/ping` 作为健康检查路径。
+部署平台从 Railway 迁回 Render。Render 服务仍通过 GitHub 仓库自动部署，仓库根目录的 `render.yaml` 指定服务配置，并以 `/api/v1/ping` 作为健康检查路径。
 
 GitHub 仓库为 `myb357/score-player`，仓库类型为 private。
 
