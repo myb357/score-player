@@ -19,7 +19,7 @@
 
 services:
   db:
-    image: postgres:16-alpine
+    image: docker.m.daocloud.io/postgres:16-alpine
     container_name: sp-postgres
     restart: unless-stopped
     environment:
@@ -41,7 +41,7 @@ services:
     networks: [spnet]
 
   minio:
-    image: minio/minio:latest
+    image: docker.m.daocloud.io/minio/minio:latest
     container_name: sp-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
