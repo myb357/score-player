@@ -20,7 +20,7 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 Android APK 使用三级端点：`API_PRIMARY='https://scoreplayer-myb.top'`、`API_FALLBACK='https://istoreos.tail11098d.ts.net'`、`API_FALLBACK2='https://score-player.onrender.com'`。离线 APK 会先探测 Cloudflare Tunnel 主入口，再切换到 Tailscale，最后才使用 Render 兜底。
 
-一键迁移脚本为 `deploy/softrouter/migrate.sh`。脚本内嵌软路由运行所需配置和 Cloudflare Tunnel 凭证，在目标软路由上执行 `bash migrate.sh` 即可写出 `.env`、`docker-compose.yml`、Cloudflare 配置，登录阿里云 ACR，并启动完整本地栈。
+一键迁移脚本为 `deploy/softrouter/migrate.sh`。脚本内嵌软路由运行所需 `.env` 配置和 Cloudflare Tunnel 凭证，在目标软路由上执行 `bash migrate.sh` 即可直接写出 `/root/score-player/deploy/softrouter/.env`、`docker-compose.yml`、Cloudflare 配置，登录阿里云 ACR，并启动完整本地栈；若目标 `.env` 已存在，脚本采用固定配置优先策略直接覆盖。
 
 GitHub 仓库为 `myb357/score-player`，仓库类型为 private。`render.yaml` 和 `railway.json` 均保留为历史或兜底部署配置；当前主生产路径不再依赖 Railway，Render 仅作为最终云端兜底。
 

@@ -55,7 +55,7 @@ deploy/softrouter/
 
 ## 一键迁移
 
-当前推荐直接使用 `migrate.sh` 完成软路由迁移。脚本会写出基础 `.env`、Cloudflare Tunnel 凭证与配置，并通过 GitHub API 下载仓库分支 `aime/1785683680-soft-router-auto-deploy` 上的最新 `docker-compose.yml` 与 `webhook/server.py`，避免迁移脚本中的内嵌模板与仓库模板脱节。脚本会从 `.env` 读取 `GITHUB_TOKEN` 用于 GitHub API 下载；该变量可留空，公开仓库仍可访问，但会受到未认证请求速率限制。随后脚本会读取 `ACR_REGISTRY`、`ACR_USERNAME`、`ACR_PASSWORD` 完成阿里云 ACR 登录，并启动完整服务栈（包含 `sp-webhook`）。
+当前推荐直接使用 `migrate.sh` 完成软路由迁移。脚本已内嵌完整 `.env` 内容，会自动写入 `/root/score-player/deploy/softrouter/.env`，用户运行前无需手动创建或填写 `.env`；若目标 `.env` 已存在，脚本会按固定配置优先策略直接覆盖，以确保一键部署结果可复现。脚本还会写出 Cloudflare Tunnel 凭证与配置，并通过内嵌的 `GITHUB_TOKEN` 使用 GitHub API 下载仓库分支 `aime/1785683680-soft-router-auto-deploy` 上的最新 `docker-compose.yml` 与 `webhook/server.py`，避免迁移脚本中的内嵌模板与仓库模板脱节。随后脚本会读取内嵌的 `ACR_REGISTRY`、`ACR_USERNAME`、`ACR_PASSWORD` 完成阿里云 ACR 登录，并启动完整服务栈（包含 `sp-webhook`）。
 
 ```bash
 cd deploy/softrouter
@@ -125,7 +125,7 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 启用步骤：
 
-1. **软路由 `.env`**：新增 `WEBHOOK_TOKEN=<32 位随机串>`（例如 `python3 -c "import secrets;print(secrets.token_hex(16))"` 生成）。如需提高 GitHub API 下载限额，可同时配置 `GITHUB_TOKEN=<GitHub token>`；该变量仅供 `migrate.sh` 下载最新 `docker-compose.yml` 与 `webhook/server.py` 使用，留空时脚本会输出警告但继续以未认证方式下载公开仓库文件。随后 `docker compose up -d sp-webhook` 启动 Webhook 容器。
+1. **软路由 `.env`**：直接运行 `bash migrate.sh`，脚本会写出已内嵌的 `WEBHOOK_TOKEN`、`GITHUB_TOKEN` 与其他运行时配置，不再需要手动填写 `.env`。如需变更 token 或域名，应修改 `migrate.sh` 中的内嵌配置后重新执行脚本。随后 `docker compose up -d sp-webhook` 启动 Webhook 容器。
 
 2. **GitHub 仓库 Secret**：在 `myb357/score-player` → Settings → Secrets and variables → Actions 中新增 Repository Secret `WEBHOOK_TOKEN`，其值必须与软路由 `.env` 中的 `WEBHOOK_TOKEN` **完全一致**。CI 中的 “Trigger soft-router deploy” 步骤会用它拼接请求。
 

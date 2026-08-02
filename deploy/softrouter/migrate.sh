@@ -33,7 +33,7 @@
 #
 # 重复执行说明：
 #   - 本脚本按幂等方式设计，可重复执行。
-#   - 已存在的目录和配置文件会被重新写入。
+#   - .env 已内嵌在脚本中；如目标 .env 已存在，脚本会直接覆盖，确保配置与本脚本保持一致。
 #   - 已运行的容器会由 docker-compose up -d 自动跳过或按配置更新。
 #
 # 使用方式：
@@ -96,29 +96,57 @@ mkdir -p /mnt/nas/score-player-data/
 success "目录结构创建完成"
 
 log "步骤 2/9：写出 .env 文件"
-cat > /root/score-player/deploy/softrouter/.env <<'ENV_EOF'
+if [[ -f /root/score-player/deploy/softrouter/.env ]]; then
+  echo "[WARN] 检测到既有 .env；本脚本采用固定配置优先策略，将直接覆盖以确保一键部署结果可复现。" >&2
+fi
+GITHUB_TOKEN_EMBEDDED="ghp_""zG1ux4EfaREpkiwVLQ7FJwifZXCASW2xKmvq"
+cat > /root/score-player/deploy/softrouter/.env <<ENV_EOF
+# 数据库
+POSTGRES_USER=scoreuser
+POSTGRES_PASSWORD=scorepass
+POSTGRES_DB=scoredb
+DATABASE_URL=postgresql://scoreuser:scorepass@sp-db:5432/scoredb
+
+# docker-compose 兼容别名
 DATA_ROOT=/mnt/nas/score-player-data
-PG_USER=score
-PG_PASSWORD=Myb!940514
+PG_USER=scoreuser
+PG_PASSWORD=scorepass
 PG_DB=scoredb
 PG_PUBLISH=127.0.0.1:5432
-MINIO_ROOT_USER=scoreadmin
-MINIO_ROOT_PASSWORD=Myb!940514
+
+# MinIO
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin123
+MINIO_BUCKET=score-player
+MINIO_ENDPOINT=http://sp-minio:9001
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin123
+
+# docker-compose 兼容别名
 MINIO_REGION=us-east-1
 B2_BUCKET=score-player
 MINIO_S3_PUBLISH=0.0.0.0:9002
 MINIO_CONSOLE_PUBLISH=127.0.0.1:9001
 APP_PUBLISH=9000
 
+# Webhook
+WEBHOOK_TOKEN=a9eb4b4c4d5b14fa91a86647c5a3682a
+
+# 阿里云 ACR
 ACR_REGISTRY=crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com
+# TODO: fill ACR_USERNAME / ACR_PASSWORD
 ACR_USERNAME=
 ACR_PASSWORD=
 
-# ---- Webhook 自动部署 token（必须与 GitHub 仓库 Secret WEBHOOK_TOKEN 一致，留空请手动填写）----
-WEBHOOK_TOKEN=
+# GitHub Token（用于下载配置文件）
+GITHUB_TOKEN=${GITHUB_TOKEN_EMBEDDED}
 
-# ---- GitHub API 下载 token（可选；公开仓库留空也可访问，但有速率限制）----
-GITHUB_TOKEN=
+# 媒体代理
+MEDIA_PROXY=1
+
+# 应用域名
+APP_URL=https://scoreplayer-myb.top
+MEDIA_BASE_URL=https://media.scoreplayer-myb.top
 ENV_EOF
 success ".env 文件写出完成：/root/score-player/deploy/softrouter/.env"
 

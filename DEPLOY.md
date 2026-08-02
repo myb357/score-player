@@ -24,7 +24,7 @@ score-player 当前生产架构已经从单一云平台部署调整为“软路�
 
 ## 方案 A：软路由本地主部署（当前推荐）
 
-当前推荐部署方式是使用 `deploy/softrouter/migrate.sh` 在软路由上一键迁移和启动。脚本会写出运行所需的 `.env`、`docker-compose.yml`、Cloudflare Tunnel 配置，登录阿里云 ACR，并启动完整本地栈。
+当前推荐部署方式是使用 `deploy/softrouter/migrate.sh` 在软路由上一键迁移和启动。脚本已内嵌完整 `.env` 内容，会自动写入 `/root/score-player/deploy/softrouter/.env`，用户运行前无需手动准备 `.env`；若目标 `.env` 已存在，脚本会直接覆盖以保持部署配置与脚本一致。脚本还会写出 `docker-compose.yml`、Cloudflare Tunnel 配置，登录阿里云 ACR，并启动完整本地栈。
 
 ```bash
 cd deploy/softrouter
