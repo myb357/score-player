@@ -87,6 +87,7 @@ services:
       # ---- 关键：本地 MinIO 的预签名 URL 指向内网 minio:9000，平板无法访问，
       #       因此开启媒体代理，让 /api/media 由 score-player 直接回源转发字节流 ----
       MEDIA_PROXY: "1"
+      COOKIE_SECURE: "0"
       PORT: "8000"
     ports:
       - "${APP_PUBLISH:-9000}:8000"
