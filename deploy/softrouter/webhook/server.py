@@ -5,8 +5,9 @@
 #   GitHub Actions 构建并推送镜像完成后，通过 Cloudflare Tunnel 暴露的
 #   https://webhook.scoreplayer-myb.top/deploy?token=<WEBHOOK_TOKEN>
 #   POST 请求触发本服务，本服务在软路由本地执行：
-#       1) docker pull <阿里云 ACR 镜像>
-#       2) docker-compose ... up -d --no-deps sp-app
+#       1) docker pull <阿里云 ACR 镜像>；失败时降级 docker pull <GHCR 镜像>
+#       2) docker tag <实际拉到的镜像> <compose 文件 image 标签>
+#       3) docker-compose ... up -d --no-deps score-player
 #   从而完成软路由上 sp-app 应用容器的主动更新。
 #
 # 设计约束：
@@ -27,8 +28,11 @@ HOST = "0.0.0.0"
 PORT = 9003
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 
-# 与 CI / migrate.sh 保持一致：应用镜像主来源为阿里云 ACR
-IMAGE = "crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest"
+# 与 CI / migrate.sh / docker-compose.yml 保持一致：compose 固定使用阿里云 ACR 镜像标签。
+# 部署时优先拉阿里云 ACR；若不可达，再降级拉 GHCR，并 tag 成 compose 需要的标签。
+COMPOSE_IMAGE = "crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest"
+PRIMARY_IMAGE = COMPOSE_IMAGE
+FALLBACK_IMAGE = "ghcr.io/myb357/score-player:latest"
 COMPOSE_FILE = "/root/score-player/deploy/softrouter/docker-compose.yml"
 COMPOSE_SERVICE = "score-player"
 
@@ -50,29 +54,68 @@ def compose_base_cmd():
     return ["docker", "compose"]
 
 
+def run_cmd(cmd, timeout=600):
+    """执行命令，返回 CompletedProcess；异常由调用方处理。"""
+    printable = " ".join(cmd)
+    log(f"执行: {printable}")
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.stdout:
+        log(proc.stdout.strip())
+    if proc.stderr:
+        log(proc.stderr.strip())
+    return proc
+
+
+def pull_image_with_fallback():
+    """优先拉阿里云 ACR；失败后降级拉 GHCR，并统一 tag 为 compose image。"""
+    try:
+        log("使用阿里云 ACR 拉取应用镜像")
+        proc = run_cmd(["docker", "pull", PRIMARY_IMAGE])
+        if proc.returncode == 0:
+            pulled_image = PRIMARY_IMAGE
+            log("使用阿里云 ACR 镜像部署")
+        else:
+            log(f"阿里云失败，降级 ghcr.io：docker pull 返回 {proc.returncode}")
+            proc = run_cmd(["docker", "pull", FALLBACK_IMAGE])
+            if proc.returncode != 0:
+                return False, f"fallback pull exited {proc.returncode}: {FALLBACK_IMAGE}", ""
+            pulled_image = FALLBACK_IMAGE
+            log("阿里云失败，降级 ghcr.io 镜像部署")
+    except Exception as e:  # noqa: BLE001
+        log(f"阿里云失败，降级 ghcr.io：{e}")
+        try:
+            proc = run_cmd(["docker", "pull", FALLBACK_IMAGE])
+        except Exception as fallback_error:  # noqa: BLE001
+            return False, f"fallback pull failed: {fallback_error}", ""
+        if proc.returncode != 0:
+            return False, f"fallback pull exited {proc.returncode}: {FALLBACK_IMAGE}", ""
+        pulled_image = FALLBACK_IMAGE
+        log("阿里云失败，降级 ghcr.io 镜像部署")
+
+    # 无论实际拉到哪个镜像，都打上 compose 文件 image 字段的标签，确保 compose 使用最新镜像。
+    proc = run_cmd(["docker", "tag", pulled_image, COMPOSE_IMAGE])
+    if proc.returncode != 0:
+        return False, f"docker tag exited {proc.returncode}: {pulled_image} -> {COMPOSE_IMAGE}", pulled_image
+    return True, "", pulled_image
+
+
 def run_deploy():
     """执行拉取镜像 + 重启 sp-app，返回 (ok: bool, detail: str)。"""
-    steps = [
-        ["docker", "pull", IMAGE],
-        compose_base_cmd() + ["-f", COMPOSE_FILE, "up", "-d", "--no-deps", COMPOSE_SERVICE],
-    ]
-    outputs = []
-    for cmd in steps:
+    ok, detail, pulled_image = pull_image_with_fallback()
+    if not ok:
+        return False, detail
+
+    cmd = compose_base_cmd() + ["-f", COMPOSE_FILE, "up", "-d", "--no-deps", COMPOSE_SERVICE]
+    try:
+        proc = run_cmd(cmd)
+    except Exception as e:  # noqa: BLE001
         printable = " ".join(cmd)
-        log(f"执行: {printable}")
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        except Exception as e:  # noqa: BLE001
-            log(f"命令异常: {printable} -> {e}")
-            return False, f"command failed: {printable}: {e}"
-        if proc.stdout:
-            log(proc.stdout.strip())
-        if proc.stderr:
-            log(proc.stderr.strip())
-        if proc.returncode != 0:
-            return False, f"command exited {proc.returncode}: {printable}"
-        outputs.append(printable)
-    return True, "; ".join(outputs)
+        log(f"命令异常: {printable} -> {e}")
+        return False, f"command failed: {printable}: {e}"
+    if proc.returncode != 0:
+        printable = " ".join(cmd)
+        return False, f"command exited {proc.returncode}: {printable}"
+    return True, f"pulled={pulled_image}; compose_image={COMPOSE_IMAGE}; {' '.join(cmd)}"
 
 
 class DeployHandler(BaseHTTPRequestHandler):

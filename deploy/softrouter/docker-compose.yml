@@ -63,7 +63,7 @@ services:
     networks: [spnet]
 
   score-player:
-    image: ghcr.io/myb357/score-player:latest
+    image: crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest
     container_name: sp-app
     restart: unless-stopped
     depends_on:

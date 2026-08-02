@@ -101,7 +101,7 @@ COOKIE_SECURE=0
 
 ## 镜像与 CI/CD
 
-GitHub Actions 会把最新应用镜像同时推送到两个 registry：GHCR `ghcr.io/myb357/score-player:latest` 和阿里云 ACR `crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`。软路由当前优先使用阿里云 ACR 镜像，GHCR 作为备用来源。
+GitHub Actions 会把最新应用镜像同时推送到两个 registry：阿里云 ACR `crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest` 为软路由主镜像源；GHCR `ghcr.io/myb357/score-player:latest` 仅作为阿里云 ACR 不可达时的备用来源。
 
 Watchtower 在软路由上以 300 秒间隔运行，持续检查 `sp-app` 的新镜像并自动更新。因此正常发布流程是推送代码到 GitHub，等待 Actions 构建并推送镜像，随后由 Watchtower 自动在软路由拉取并替换应用容器。
 
@@ -116,7 +116,9 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
    cloudflared(host) ──http://172.17.0.1:9003──▶ sp-webhook 容器 (server.py)
                               │  token 校验通过
                               ▼
-   docker pull <阿里云 ACR 镜像> ; docker-compose up -d --no-deps score-player
+   docker pull <阿里云 ACR 镜像> || docker pull <GHCR 备用镜像>
+   docker tag <实际拉到的镜像> <compose 文件 image 标签>
+   docker-compose up -d --no-deps score-player
 ```
 
 `sp-webhook` 服务由 `webhook/server.py`（Python 标准库实现，监听 `9003`）提供，`docker-compose.yml` 中以 `python:3.11-alpine` 挂载运行；容器会直接挂载宿主机 `/usr/bin/docker` 与 `/usr/bin/docker-compose` 二进制，并在启动日志中打印实际探测到的路径。该方案不再在容器启动时通过 `apk` 安装 docker 工具链，避免 iStoreOS 环境下安装慢或外网访问受阻。
