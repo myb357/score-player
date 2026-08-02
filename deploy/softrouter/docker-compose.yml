@@ -1,0 +1,97 @@
+# ============================================================================
+# 软路由（iStoreOS）本地主库栈：PostgreSQL(主库) + MinIO(主对象存储) + score-player
+#
+#   score-player  ──连接──▶  db(PostgreSQL)   :5432   主数据库
+#                 ──连接──▶  minio(S3 兼容)   :9000   主对象存储
+#
+# 数据方向：本地为“主库”，云端(Supabase + Backblaze B2)为“备库”，由 sync/ 目录
+# 下的同步任务单向 本地 ▶ 云端 复制。
+#
+# 使用方式：
+#   1) cp .env.softrouter.example .env  并按需修改密码/路径
+#   2) docker compose up -d
+#   3) bash scripts/init_minio.sh            # 首次创建 bucket
+#   4) bash scripts/import_from_supabase.sh  # 首次从云端导入现有数据（可选）
+#
+# 存储说明：PostgreSQL 与 MinIO 均使用「外挂目录 bind mount」持久化到 ${DATA_ROOT}，
+#          请将 DATA_ROOT 指向软路由的外接磁盘/大容量分区，切勿使用内存(tmpfs)。
+# ============================================================================
+
+services:
+  db:
+    image: docker.m.daocloud.io/postgres:16-alpine
+    container_name: sp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-score}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-change-me-pg}
+      POSTGRES_DB: ${PG_DB:-scoredb}
+      # 数据目录放到子目录，避免 bind mount 根目录 lost+found 冲突
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ${DATA_ROOT:-./data}/postgres:/var/lib/postgresql/data
+    ports:
+      # 仅在需要从软路由宿主机直接连库调试时暴露；生产可注释掉只走内网
+      - "${PG_PUBLISH:-127.0.0.1:5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-score} -d ${PG_DB:-scoredb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [spnet]
+
+  minio:
+    image: docker.m.daocloud.io/minio/minio:latest
+    container_name: sp-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-scoreadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-minio}
+      # 让 MinIO 对外声明的 region 与 score-player 的 B2_REGION 保持一致
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+    volumes:
+      - ${DATA_ROOT:-./data}/minio:/data
+    ports:
+      - "${MINIO_S3_PUBLISH:-127.0.0.1:9002}:9000"   # S3 API（宿主机调试用）
+      - "${MINIO_CONSOLE_PUBLISH:-127.0.0.1:9001}:9001"  # Web 控制台
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [spnet]
+
+  score-player:
+    image: ghcr.io/myb357/score-player:latest
+    container_name: sp-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      # ---- 运行时临时目录 ----
+      SCORE_DATA_DIR: /tmp/score_app_data
+      # ---- 主数据库：本地 PostgreSQL（局域网内、无 SSL，必须显式 sslmode=disable）----
+      # 注意：main.py 会在缺省 sslmode 时自动追加 sslmode=require，本地库没有 SSL，
+      #       因此这里必须显式写 sslmode=disable，否则连接会失败。
+      DATABASE_URL: postgresql://${PG_USER:-score}:${PG_PASSWORD:-change-me-pg}@db:5432/${PG_DB:-scoredb}?sslmode=disable
+      # ---- 主对象存储：本地 MinIO（S3 兼容）----
+      B2_ENDPOINT: http://minio:9000
+      B2_KEY_ID: ${MINIO_ROOT_USER:-scoreadmin}
+      B2_APP_KEY: ${MINIO_ROOT_PASSWORD:-change-me-minio}
+      B2_BUCKET: ${B2_BUCKET:-score-player}
+      B2_REGION: ${MINIO_REGION:-us-east-1}
+      # ---- 关键：本地 MinIO 的预签名 URL 指向内网 minio:9000，平板无法访问，
+      #       因此开启媒体代理，让 /api/media 由 score-player 直接回源转发字节流 ----
+      MEDIA_PROXY: "1"
+      PORT: "8000"
+    ports:
+      - "${APP_PUBLISH:-9000}:8000"
+    networks: [spnet]
+
+networks:
+  spnet:
+    driver: bridge
