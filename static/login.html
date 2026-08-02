@@ -9,8 +9,8 @@
     /* ---- 方案B: offline/web dual-mode runtime ---- */
     var IS_FILE = location.protocol === 'file:';
     /* ---- 服务端点故障切换：Render 优先 + 软路由兜底（仅离线 APK/file:// 生效）---- */
-    var API_PRIMARY = 'https://score-player.onrender.com';   /* Render（主）*/
-    var API_FALLBACK = 'https://istoreos.tail11098d.ts.net';   /* 软路由（备）*/
+    var API_PRIMARY = 'https://scoreplayer-myb.top';   /* Cloudflare Tunnel（主）*/
+    var API_FALLBACK = 'https://istoreos.tail11098d.ts.net';   /* Tailscale 软路由（备）*/
     var API_PROBE_TIMEOUT = 4000;   /* Render 健康探测超时(ms)，3-5s */
     var API_CHOICE_TTL = 60000;     /* 端点选择缓存(ms)，跨页面复用，避免每次重探 */
     /* Web 模式(同源)保持相对路径 ''；离线 APK 默认先用 Render 主地址 */
@@ -32,7 +32,7 @@
       if (API_BASE === base) return;
       API_BASE = base;
       try { sessionStorage.setItem('api_base_choice', base + '|' + Date.now()); } catch (e) {}
-      if (base === API_FALLBACK) __epToast('云端服务不可用，已切换到软路由' + (reason || ''));
+      if (base === API_FALLBACK) __epToast('主服务不可用，已切换到 Tailscale 软路由' + (reason || ''));
     }
     function __epProbe(url, timeout) {
       if (typeof AbortController === 'undefined') return fetch(url, { cache: 'no-store' });
