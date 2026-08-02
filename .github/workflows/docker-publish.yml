@@ -20,6 +20,42 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Android APK
+        run: |
+          cd android
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew assembleRelease || ./gradlew assembleDebug
+          else
+            gradle assembleRelease || gradle assembleDebug
+          fi
+
+      - name: Prepare APK for Docker
+        run: |
+          APK_PATH=""
+          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
+            APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            APK_PATH="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          elif [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+            APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          else
+            echo "No Android APK was produced."
+            exit 1
+          fi
+          mkdir -p static/android score_app/static/android
+          cp "$APK_PATH" static/android/score-player.apk
+          cp "$APK_PATH" score_app/static/android/score-player.apk
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:

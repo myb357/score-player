@@ -169,10 +169,12 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 
 | Commit | 说明 |
 |---|---|
-| `70c7d3d` | `refactor: migrate.sh downloads compose/server.py from GitHub instead of inline heredoc` |
-| `58472fa` | `feat: embed all credentials in migrate.sh for one-command deploy` |
-| `439b20b` | `feat: fill ACR credentials in migrate.sh` |
+| `cc48f2e` | `docs: sync all docs to latest state (one-command deploy + LAN fallback)` |
 | `c02e89a` | `feat: Android App LAN-first with WAN fallback` |
+| `[commit]` | `fix: align Android version 1.3.3 and enable CI auto-build for APK` |
+| `439b20b` | `feat: fill ACR credentials in migrate.sh` |
+| `58472fa` | `feat: embed all credentials in migrate.sh for one-command deploy` |
+| `70c7d3d` | `refactor: migrate.sh downloads compose/server.py from GitHub instead of inline heredoc` |
 
 ## APK 内网优先端点
 
@@ -183,7 +185,7 @@ Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址
 外网兜底入口：https://scoreplayer-myb.top
 ```
 
-冷启动时 APK 会对 `http://192.168.1.2:9000` 发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，不可达时加载外网 Cloudflare Tunnel 地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()` 与 `AndroidBridge.isInternalNetworkReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。
+冷启动时 APK 会对 `http://192.168.1.2:9000` 发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，不可达时加载外网 Cloudflare Tunnel 地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()` 与 `AndroidBridge.isInternalNetworkReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。当前 Android 版本号已对齐为 1.3.3，GitHub Actions 会在 Docker 镜像构建前自动构建 APK 并打入镜像，避免网页下载到过期手工包。
 
 ## 历史同步任务说明
 
