@@ -10,14 +10,18 @@
 - 全站移动端响应式。
 
 ## 技术栈
-- 后端：FastAPI（Python），SQLite 存元数据，本地文件存图片/音频，ffmpeg 处理音视频。
+- 后端：FastAPI（Python），Supabase PostgreSQL 存元数据，Backblaze B2 存图片/音频，ffmpeg 处理音视频。
 - 前端：原生 HTML/CSS/JS（无框架），由后端直接托管。
+- 部署：Docker 容器，已提供 Railway 配置。
 
 ## 本地运行
 ```bash
-cd score_app
+git clone <repo-url>
+cd score-player
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
+# 填入 DATABASE_URL、B2_KEY_ID、B2_APP_KEY 等真实配置
 uvicorn main:app --host 0.0.0.0 --port 8000
 # 打开 http://localhost:8000
 ```
@@ -25,7 +29,12 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ## 环境变量
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `SCORE_DATA_DIR` | 数据目录（SQLite + 上传文件） | `/tmp/score_app_data` |
+| `SCORE_DATA_DIR` | 运行时临时目录（仅用于 ffmpeg 转码等临时文件） | `/tmp/score_app_data` |
+| `DATABASE_URL` | Supabase PostgreSQL 连接串 | 无，必填 |
+| `B2_KEY_ID` / `B2_APP_KEY` | Backblaze B2 S3 兼容访问密钥 | 无，必填 |
+| `B2_ENDPOINT` | Backblaze B2 S3 endpoint | `s3.ca-east-006.backblazeb2.com` |
+| `B2_BUCKET` | Backblaze B2 bucket | `score-player` |
+| `B2_REGION` | Backblaze B2 region | 可从 endpoint 自动解析 |
 | `ADMIN_USERNAME` | 登录用户名 | `admin` |
 | `ADMIN_SALT` / `ADMIN_HASH` | 密码的 PBKDF2 盐与哈希（仅存哈希） | 内置默认 |
 | `FFMPEG_BINARY` | 指定 ffmpeg 路径（可选） | 自动探测系统/内置 |

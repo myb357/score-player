@@ -17,7 +17,7 @@ services:
         value: /tmp/score_app_data
 
       # --- Supabase PostgreSQL 连接串（敏感，控制台填入） ---
-      # 形如 postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
+      # 形如 postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
       - key: DATABASE_URL
         sync: false
 

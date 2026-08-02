@@ -1,6 +1,6 @@
 # score-player 项目开发上下文
 
-> 文档目的：这份文档用于在未来交给 AI 或新开发者时，快速恢复 score-player 项目的完整上下文，直接开展增量开发。本文基于当前 `score_app/` 代码目录整理，重点覆盖项目定位、部署方式、代码结构、数据库结构、已实现功能、关键设计决策和后续开发注意事项。
+> 文档目的：这份文档用于在未来交给 AI 或新开发者时，快速恢复 score-player 项目的完整上下文，直接开展增量开发。本文基于当前仓库根目录整理，重点覆盖项目定位、部署方式、代码结构、数据库结构、已实现功能、关键设计决策和后续开发注意事项。
 
 ## 1. 项目概述
 
@@ -10,9 +10,9 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 ## 2. 部署信息
 
-公网地址为 `https://score-player.onrender.com`。
+公网地址历史上为 `https://score-app-production-953e.up.railway.app`，当前迁移目标为 Railway，迁移完成后应以 Railway 生成的公网 HTTPS 域名为准。
 
-部署平台为 Render，通过 GitHub 自动部署，`main` 分支触发线上构建与发布。
+部署平台从 Render 迁移到 Railway。Railway 通过 GitHub 仓库自动部署，仓库根目录的 `railway.json` 指定使用根目录 `Dockerfile` 构建，并以 `/api/v1/ping` 作为健康检查路径。
 
 GitHub 仓库为 `myb357/score-player`，仓库类型为 private。
 
@@ -24,43 +24,45 @@ Render 环境变量只应配置变量名，不应把敏感值写入仓库。核�
 
 ## 3. 代码结构
 
-`score_app/main.py` 是后端主程序，创建 FastAPI 应用，定义鉴权中间件、页面路由、用户管理 API、谱子 CRUD API、导入导出 API、B2 存储操作、Supabase PostgreSQL 连接池、ffmpeg 音视频转换、图片自动裁剪检测和数据库初始化逻辑。
+`main.py` 是后端主程序，创建 FastAPI 应用，定义鉴权中间件、页面路由、用户管理 API、谱子 CRUD API、导入导出 API、B2 存储操作、Supabase PostgreSQL 连接池、ffmpeg 音视频转换、图片自动裁剪检测和数据库初始化逻辑。
 
-`score_app/static/home.html` 是登录后的主页，负责展示谱子列表、导入谱子、批量选择、批量导出、批量删除、修改密码、清除本地缓存、退出登录，以及根据角色显示用户管理入口。
+`static/home.html` 是登录后的主页，负责展示谱子列表、导入谱子、批量选择、批量导出、批量删除、修改密码、清除本地缓存、退出登录，以及根据角色显示用户管理入口。
 
-`score_app/static/login.html` 是登录页，提交用户名和密码到 `/api/login`，成功后跳转主页，失败时展示错误信息。
+`static/login.html` 是登录页，提交用户名和密码到 `/api/login`，成功后跳转主页，失败时展示错误信息。
 
-`score_app/static/new.html` 是新建和编辑谱子的页面。它支持谱子命名、选择翻页模式、多图片上传、拖拽排序、图片自动裁边后手动裁剪、上传音频或视频、截取伴奏片段，以及编辑已有谱子时保留、替换或移除伴奏。
+`static/new.html` 是新建和编辑谱子的页面。它支持谱子命名、选择翻页模式、多图片上传、拖拽排序、图片自动裁边后手动裁剪、上传音频或视频、截取伴奏片段，以及编辑已有谱子时保留、替换或移除伴奏。
 
-`score_app/static/player.html` 是播放器页面。它加载单个谱子详情和 B2 预签名资源地址，支持图片展示、自动翻页、手动翻页、播放暂停、倍速、A-B 循环、进度拖动、触屏快进快退、缩放平移、滚动/适应屏幕模式切换、全屏和导出当前谱子。
+`static/player.html` 是播放器页面。它加载单个谱子详情和 B2 预签名资源地址，支持图片展示、自动翻页、手动翻页、播放暂停、倍速、A-B 循环、进度拖动、触屏快进快退、缩放平移、滚动/适应屏幕模式切换、全屏和导出当前谱子。
 
-`score_app/static/users.html` 是超级管理员用户管理页，支持查看用户列表、创建普通用户或超级管理员、删除用户、重置用户密码，并对非超级管理员访问做前端守卫。
+`static/users.html` 是超级管理员用户管理页，支持查看用户列表、创建普通用户或超级管理员、删除用户、重置用户密码，并对非超级管理员访问做前端守卫。
 
-`score_app/static/style.css` 是全站样式文件，定义深色主题、布局、按钮、表单、卡片、播放器左右控制栏、移动端适配、Toast、上传区、裁剪弹窗等视觉样式。
+`static/style.css` 是全站样式文件，定义深色主题、布局、按钮、表单、卡片、播放器左右控制栏、移动端适配、Toast、上传区、裁剪弹窗等视觉样式。
 
-`score_app/Dockerfile` 是容器构建文件，安装 Python 依赖和 ffmpeg，并以 Web 服务方式运行应用。
+`Dockerfile` 是容器构建文件，安装 Python 依赖和 ffmpeg，并以 Web 服务方式运行应用。
 
-`score_app/requirements.txt` 是 Python 依赖清单，包含 FastAPI、Uvicorn、psycopg2、boto3、Pillow、python-multipart、imageio-ffmpeg 等运行依赖。
+`requirements.txt` 是 Python 依赖清单，包含 FastAPI、Uvicorn、psycopg2、boto3、Pillow、python-multipart、imageio-ffmpeg 等运行依赖。
 
-`score_app/render.yaml` 是 Render Blueprint 配置，定义 Web Service、Dockerfile 路径、免费套餐、健康检查路径 `/api/v1/ping`，以及 Render 环境变量声明。
+`render.yaml` 是历史 Render Blueprint 配置，定义 Web Service、Dockerfile 路径、免费套餐、健康检查路径 `/api/v1/ping`，以及 Render 环境变量声明。
 
-`score_app/DEPLOY.md` 是部署说明文档，记录 Render/Railway 部署方式，以及 Render 连接 Supabase 时必须改用 IPv4 可达的 Session Pooler 的原因和处理步骤。
+`railway.json` 是 Railway 部署配置，指定 Dockerfile 构建、启动命令、健康检查路径 `/api/v1/ping` 和失败重启策略。
 
-`score_app/README.md` 是项目基础说明文档，用于介绍项目和基本使用方式。
+`DEPLOY.md` 是部署说明文档，记录 Render/Railway 部署方式，以及 Render 连接 Supabase 时必须改用 IPv4 可达的 Session Pooler 的原因和处理步骤。
 
-`score_app/run.sh` 是运行脚本，通常用于容器或平台环境启动服务。
+`README.md` 是项目基础说明文档，用于介绍项目和基本使用方式。
 
-`score_app/.env.example` 是本地环境变量示例文件，只能放占位示例值，不应包含真实密钥。
+`run.sh` 是运行脚本，通常用于容器或平台环境启动服务。
 
-`score_app/.env` 是本地环境变量文件，可能包含敏感配置，不应提交到 Git。
+`.env.example` 是本地环境变量示例文件，只能放占位示例值，不应包含真实密钥。
 
-`score_app/.gitignore` 是 Git 忽略规则文件，当前用于避免提交本地环境和运行产物。
+`.env` 是本地环境变量文件，可能包含敏感配置，不应提交到 Git。
 
-`score_app/score-player-source.zip` 是当前目录中的源码压缩包或历史产物，不是线上运行必需文件，后续开发一般不要改动或依赖它。
+`.gitignore` 是 Git 忽略规则文件，当前用于避免提交本地环境和运行产物。
 
-`score_app/venv/` 是本地 Python 虚拟环境目录，不应提交到 Git，也不应作为代码分析或部署依据。
+`score-player-source.zip` 是当前目录中的源码压缩包或历史产物，不是线上运行必需文件，后续开发一般不要改动或依赖它。
 
-`score_app/__pycache__/` 是 Python 字节码缓存目录，不应提交到 Git。
+`venv/` 是本地 Python 虚拟环境目录，不应提交到 Git，也不应作为代码分析或部署依据。
+
+`__pycache__/` 是 Python 字节码缓存目录，不应提交到 Git。
 
 ## 4. 数据库结构
 
@@ -166,9 +168,9 @@ B2 文件路径规则以谱子 ID 隔离。所有谱子相关对象都放在 `sc
 
 ## 8. 增量开发指引
 
-本地运行时，进入 `score_app/` 目录，创建并启用 Python 虚拟环境，安装依赖后配置环境变量，再启动 `main.py`。典型流程是执行 `python -m venv venv`，启用虚拟环境，执行 `pip install -r requirements.txt`，复制 `.env.example` 为 `.env` 并填入本地或测试环境的 `DATABASE_URL`、`B2_KEY_ID`、`B2_APP_KEY`、`B2_ENDPOINT`、`B2_BUCKET` 等配置，然后执行 `python main.py` 或使用 `uvicorn main:app --host 0.0.0.0 --port 8000` 启动服务。启动后可访问 `/api/v1/ping` 验证服务健康，再访问 `/login` 登录。
+本地运行时，在仓库根目录创建并启用 Python 虚拟环境，安装依赖后配置环境变量，再启动 `main.py`。典型流程是执行 `python -m venv venv`，启用虚拟环境，执行 `pip install -r requirements.txt`，复制 `.env.example` 为 `.env` 并填入本地或测试环境的 `DATABASE_URL`、`B2_KEY_ID`、`B2_APP_KEY`、`B2_ENDPOINT`、`B2_BUCKET` 等配置，然后执行 `python main.py` 或使用 `uvicorn main:app --host 0.0.0.0 --port 8000` 启动服务。启动后可访问 `/api/v1/ping` 验证服务健康，再访问 `/login` 登录。
 
-推送代码触发 Render 部署时，应在 `score_app/` 仓库工作区确认只修改了预期文件，避免提交 `.env`、`venv/`、`__pycache__/`、本地临时文件或敏感密钥。提交到 GitHub 仓库 `myb357/score-player` 的 `main` 分支后，Render 会自动拉取 main 分支并重新构建部署。若自动部署未触发，可在 Render 控制台执行 Manual Deploy。
+推送代码触发 Railway 部署时，应在仓库工作区确认只修改了预期文件，避免提交 `.env`、`venv/`、`__pycache__/`、本地临时文件或敏感密钥。提交到 GitHub 仓库 `myb357/score-player` 的部署分支后，Railway 会自动拉取最新提交并重新构建部署；如自动部署未触发，可在 Railway 控制台手动 Redeploy。
 
 常见坑之一是 Render 无法连接 Supabase 直连地址。线上 `DATABASE_URL` 必须使用 Session Pooler，并带上 `sslmode=require` 或让代码自动追加 `sslmode=require`。如果使用直连 `db.<ref>.supabase.co`，Render 可能因 IPv6 不可达导致登录或数据库操作 500。
 
