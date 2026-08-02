@@ -93,7 +93,7 @@ MEDIA_PROXY=0
 COOKIE_SECURE=0
 ```
 
-`MEDIA_PROXY=0` 是当前 Cloudflare Tunnel 架构下的关键配置。媒体资源由 `S3_PUBLIC_ENDPOINT` 指向 `https://media.scoreplayer-myb.top`，浏览器和 APK 可直接访问 MinIO 对外地址，不需要 app 代为回源转发。`COOKIE_SECURE=0` 与当前软路由本地链路兼容，避免本地或代理路径下 Cookie 写入异常。
+`MEDIA_PROXY=0` 是当前 Cloudflare Tunnel 架构下的关键配置。媒体资源由 `S3_PUBLIC_ENDPOINT` 指向 `https://media.scoreplayer-myb.top`，浏览器和 APK 可直接访问 MinIO 对外地址，不需要 app 代为回源转发。应用生成媒体预签名 URL 时会直接使用 `S3_PUBLIC_ENDPOINT` 作为 S3 client endpoint，使签名中的 host 与外网媒体域名一致；不要再对已签名 URL 做域名字符串替换。`COOKIE_SECURE=0` 与当前软路由本地链路兼容，避免本地或代理路径下 Cookie 写入异常。
 
 ## 镜像与 CI/CD
 

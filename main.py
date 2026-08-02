@@ -15,7 +15,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit
 
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, Form, BackgroundTasks
@@ -95,11 +95,26 @@ def _ctype(fname: str) -> str:
 # ----------------------------------------------------------------------------
 # Backblaze B2 (S3) storage helpers
 # ----------------------------------------------------------------------------
-def _b2_endpoint_url() -> str:
-    ep = B2_ENDPOINT.strip()
+def _normalize_endpoint_url(endpoint: str, default_scheme: str = "https") -> str:
+    ep = endpoint.strip().rstrip("/")
     if ep and not ep.startswith("http"):
-        ep = "https://" + ep
+        ep = f"{default_scheme}://{ep}"
     return ep
+
+
+def _b2_endpoint_url() -> str:
+    return _normalize_endpoint_url(B2_ENDPOINT)
+
+
+def _s3_presign_endpoint_url() -> str:
+    if S3_PUBLIC_ENDPOINT and not MEDIA_PROXY:
+        return _normalize_endpoint_url(S3_PUBLIC_ENDPOINT)
+    return _b2_endpoint_url()
+
+
+def _s3_endpoint_options(endpoint_url: str) -> dict:
+    scheme = urlsplit(endpoint_url).scheme.lower()
+    return {"use_ssl": scheme == "https", "verify": True}
 
 
 def _b2_region() -> str:
@@ -110,24 +125,37 @@ def _b2_region() -> str:
 
 
 _s3_client = None
+_s3_presign_client = None
+
+
+def _create_s3_client(endpoint_url: str):
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=B2_KEY_ID,
+        aws_secret_access_key=B2_APP_KEY,
+        region_name=_b2_region(),
+        config=BotoConfig(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            retries={"max_attempts": 3, "mode": "standard"},
+        ),
+        **_s3_endpoint_options(endpoint_url),
+    )
 
 
 def get_s3():
     global _s3_client
     if _s3_client is None:
-        _s3_client = boto3.client(
-            "s3",
-            endpoint_url=_b2_endpoint_url(),
-            aws_access_key_id=B2_KEY_ID,
-            aws_secret_access_key=B2_APP_KEY,
-            region_name=_b2_region(),
-            config=BotoConfig(
-                signature_version="s3v4",
-                s3={"addressing_style": "path"},
-                retries={"max_attempts": 3, "mode": "standard"},
-            ),
-        )
+        _s3_client = _create_s3_client(_b2_endpoint_url())
     return _s3_client
+
+
+def get_s3_presign():
+    global _s3_presign_client
+    if _s3_presign_client is None:
+        _s3_presign_client = _create_s3_client(_s3_presign_endpoint_url())
+    return _s3_presign_client
 
 
 def _score_key(score_id: int, filename: str) -> str:
@@ -148,27 +176,10 @@ def b2_read_bytes(key: str) -> bytes:
         obj["Body"].close()
 
 
-def _replace_url_origin(url: str, public_endpoint: str) -> str:
-    endpoint = public_endpoint.strip().rstrip("/")
-    b2_parts = urlsplit(_b2_endpoint_url())
-    b2_origin = urlunsplit((b2_parts.scheme, b2_parts.netloc, "", "", ""))
-    if b2_origin and url.startswith(b2_origin):
-        return endpoint + url[len(b2_origin):]
-
-    parts = urlsplit(url)
-    endpoint_parts = urlsplit(endpoint)
-    public_scheme = endpoint_parts.scheme or parts.scheme
-    public_netloc = endpoint_parts.netloc or endpoint_parts.path
-    return urlunsplit((public_scheme, public_netloc, parts.path, parts.query, parts.fragment))
-
-
 def b2_presigned_url(key: str, ttl: int = PRESIGN_TTL) -> str:
-    url = get_s3().generate_presigned_url(
+    return get_s3_presign().generate_presigned_url(
         "get_object", Params={"Bucket": B2_BUCKET, "Key": key}, ExpiresIn=ttl
     )
-    if S3_PUBLIC_ENDPOINT:
-        url = _replace_url_origin(url, S3_PUBLIC_ENDPOINT)
-    return url
 
 
 def b2_list_keys(prefix: str) -> List[str]:

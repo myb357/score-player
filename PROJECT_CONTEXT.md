@@ -16,7 +16,7 @@ score-player 是一个“谱子 + 伴奏播放器”网站。用户可以上传�
 
 镜像主来源为阿里云 ACR：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`。GitHub Actions 同时推送 GHCR：`ghcr.io/myb357/score-player:latest`，作为备用镜像源。软路由上的 Watchtower 每 5 分钟检查并自动拉取新镜像更新 `sp-app`。
 
-软路由当前关键运行环境变量包括 `MEDIA_PROXY=0`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`、`DATABASE_URL=postgresql://score:<password>@db:5432/scoredb?sslmode=disable`、`B2_BUCKET=score-player`、`B2_REGION=us-east-1`。其中 `MEDIA_PROXY=0` 表示媒体访问不经 app 代理，由 `S3_PUBLIC_ENDPOINT` 指向的媒体域名直连 MinIO。
+软路由当前关键运行环境变量包括 `MEDIA_PROXY=0`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`、`DATABASE_URL=postgresql://score:<password>@db:5432/scoredb?sslmode=disable`、`B2_BUCKET=score-player`、`B2_REGION=us-east-1`。其中 `MEDIA_PROXY=0` 表示媒体访问不经 app 代理，由 `S3_PUBLIC_ENDPOINT` 指向的媒体域名直连 MinIO；后端生成媒体预签名 URL 时也会直接使用该公开端点作为 S3 client endpoint，确保签名中的 host 与外网访问域名一致。
 
 Android APK 使用三级端点：`API_PRIMARY='https://scoreplayer-myb.top'`、`API_FALLBACK='https://istoreos.tail11098d.ts.net'`、`API_FALLBACK2='https://score-player.onrender.com'`。离线 APK 会先探测 Cloudflare Tunnel 主入口，再切换到 Tailscale，最后才使用 Render 兜底。
 

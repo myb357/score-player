@@ -20,7 +20,7 @@ score-player 当前生产架构已经从单一云平台部署调整为“软路�
 
 软路由本地栈由 Docker Compose 管理，包含 `sp-postgres`、`sp-minio`、`sp-app`、`sp-cloudflared` 和 `watchtower`。数据目录为 `/mnt/nas/score-player-data`，app 端口为 `9000`。应用镜像当前优先从阿里云 ACR 拉取：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`，GHCR `ghcr.io/myb357/score-player:latest` 保留为备用镜像源。
 
-关键运行配置包括 `MEDIA_PROXY=0`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`。其中 `MEDIA_PROXY=0` 表示媒体访问绕过 app 代理，由媒体域名直连 MinIO。
+关键运行配置包括 `MEDIA_PROXY=0`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`。其中 `MEDIA_PROXY=0` 表示媒体访问绕过 app 代理，由媒体域名直连 MinIO；应用生成媒体预签名 URL 时会直接使用 `S3_PUBLIC_ENDPOINT` 创建 S3 client，避免先用内网 `B2_ENDPOINT` 签名再替换域名导致 MinIO host 签名校验失败。
 
 ## 方案 A：软路由本地主部署（当前推荐）
 
