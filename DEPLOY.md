@@ -13,12 +13,14 @@ score-player 当前生产架构已经从单一云平台部署调整为“软路�
   │
   ├─ 媒体：Cloudflare Tunnel → https://media.scoreplayer-myb.top → MinIO:9002
   │
+  ├─ 外网 SSH：Cloudflare Tunnel Access → ssh.scoreplayer-myb.top → Dropbear:192.168.1.2:22
+  │
   ├─ 备用：Tailscale → https://istoreos.tail11098d.ts.net
   │
   └─ 兜底：Render → https://score-player.onrender.com
 ```
 
-软路由本地栈由 Docker Compose 管理，部署目录为 `/root/score-player/deploy/softrouter`，包含 `sp-postgres`、`sp-minio`、`sp-app`、`sp-webhook`、`sp-cloudflared` 和 `watchtower`。数据目录为 `/mnt/nas/score-player-data`，app 端口为 `9000`，MinIO S3 端口为 `9002`，Webhook 端口为 `9003`。应用镜像当前优先从阿里云 ACR 拉取：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`；GHCR `ghcr.io/myb357/score-player:latest` 仅作为阿里云 ACR 不可达时的备用镜像源。
+软路由本地栈由 Docker Compose 管理，部署目录为 `/root/score-player/deploy/softrouter`，包含 `sp-postgres`、`sp-minio`、`sp-app`、`sp-webhook`、`sp-cloudflared` 和 `watchtower`。数据目录为 `/mnt/nas/score-player-data`，app 端口为 `9000`，MinIO S3 端口为 `9002`，Webhook 端口为 `9003`。外网 SSH 入口已通过同一个 locally managed Cloudflare Tunnel 暴露为 `ssh.scoreplayer-myb.top`，本机 ingress 指向 `ssh://192.168.1.2:22`，并依赖 Cloudflare DNS 中手动维护的 `ssh` CNAME 记录指向 `91086842-3bb6-4fc7-b11f-d65b0824c36a.cfargotunnel.com`。应用镜像当前优先从阿里云 ACR 拉取：`crpi-rd0vl6t3c1p11agm.cn-beijing.personal.cr.aliyuncs.com/myb357/score-player:latest`；GHCR `ghcr.io/myb357/score-player:latest` 仅作为阿里云 ACR 不可达时的备用镜像源。
 
 关键运行配置包括 `MEDIA_PROXY=1`、`COOKIE_SECURE=0`、`S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top`、`B2_ENDPOINT=http://192.168.1.2:9002`。其中 `MEDIA_PROXY=1` 是软路由本地 MinIO 模式的正确取值：本地 MinIO 生成的预签名 URL 指向内网 `minio:9000`，平板/浏览器无法直连，因此由 app 通过 `/api/media` 回源转发媒体字节流（支持 HTTP Range）；`MEDIA_PROXY=0` 仅用于 Render / Backblaze B2 公网对象存储模式，此时 app 302 跳转到公网可达的预签名 URL，并直接使用 `S3_PUBLIC_ENDPOINT` 创建 S3 client，避免先用内网 `B2_ENDPOINT` 签名再替换域名导致 MinIO host 签名校验失败。
 
@@ -46,6 +48,28 @@ curl -fsS https://scoreplayer-myb.top/api/v1/ping
 CI 采用「Webhook 主动部署」：GitHub Actions 在镜像推送完成后，会经 Cloudflare Tunnel 暴露的 `https://webhook.scoreplayer-myb.top/deploy?token=<WEBHOOK_TOKEN>` 向软路由的 `sp-webhook` 服务发起 `POST` 请求（带 `--fail-with-body` 与 `--retry 3 --retry-delay 5 --retry-all-errors` 重试，并附带诊断用 JSON body）。Render 云端兜底服务通过 GitHub Auto-Deploy 自动更新，不需要 CI 额外触发。`sp-webhook` 校验 query param 中的 token 通过后，在软路由本地优先执行 `docker pull` 最新阿里云 ACR 镜像；若阿里云 ACR 拉取失败，则降级拉取 GHCR 镜像，并将实际拉到的镜像 tag 为 compose 文件中的阿里云 ACR 镜像标签，再执行 `docker-compose up -d --no-deps score-player` 重启应用容器。容器内的 `docker` / `docker-compose` 直接从宿主机 `/usr/bin` 挂载，不再通过 `apk` 动态安装。该链路要求 GitHub 仓库 Secret `WEBHOOK_TOKEN` 与软路由 `.env` 中的 `WEBHOOK_TOKEN` 一致。未配置或 token 不匹配时软路由部署步骤会失败，Watchtower 仍作为软路由默认更新机制兜底。已移除原先基于 Tailscale + SSH 的部署步骤及 `SOFTROUTER_SSH_KEY`、`TAILSCALE_AUTH_KEY` 相关配置。
 
 当前生产发布统一走 `main` 分支，旧软路由自动部署分支已删除；部署文档、一键迁移命令、迁移脚本下载源和 GitHub Actions 分支触发均应保持在 `main`。
+
+## Cloudflare Tunnel 外网 SSH
+
+当前软路由可通过 Cloudflare Tunnel Access 从外网 SSH 登录。由于 Tunnel 是本地配置文件管理模式，需在软路由 `/root/.cloudflared/config.yml` 的 `ingress` 中、`http_status:404` 之前保留以下规则：
+
+```yaml
+- hostname: ssh.scoreplayer-myb.top
+  service: ssh://192.168.1.2:22
+```
+
+这里必须指向 `192.168.1.2:22`，因为 Dropbear 当前只监听软路由 LAN 地址；写成 `localhost` 会被解析到 IPv6 `[::1]:22` 并导致连接拒绝。Cloudflare Dashboard 的 Zero Trust Routes 页面显示 `Published application` 不代表 DNS 自动创建完成，还必须在 `scoreplayer-myb.top` 的 DNS Records 中保留 `ssh` CNAME，目标为 `91086842-3bb6-4fc7-b11f-d65b0824c36a.cfargotunnel.com`，并开启代理。
+
+外网客户端安装 `cloudflared` CLI 后，可在 `~/.ssh/config` 添加：
+
+```sshconfig
+Host score-router
+  HostName ssh.scoreplayer-myb.top
+  User root
+  ProxyCommand cloudflared access ssh --hostname %h
+```
+
+之后执行 `ssh score-router` 即可登录软路由。若出现 `no such host`，优先检查 DNS Records；若 `sp-cloudflared` 日志出现 `[::1]:22 connect: connection refused`，优先检查 SSH ingress 是否误写为 `localhost`。
 
 ## 方案 B：Render（当前云端兜底）
 

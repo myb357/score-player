@@ -201,6 +201,8 @@ ingress:
     service: http://172.17.0.1:9003
   - hostname: media.scoreplayer-myb.top
     service: http://172.17.0.1:9002
+  - hostname: ssh.scoreplayer-myb.top
+    service: ssh://192.168.1.2:22
   - service: http_status:404
 YAML_EOF
 chmod 600 /root/.cloudflared/config.yml

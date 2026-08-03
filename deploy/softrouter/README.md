@@ -9,6 +9,7 @@
    Cloudflare Tunnel     │                         │                                            │
                          │                         └──▶ sp-minio :9002       [主对象存储]       │
    媒体域名 ─────────────▶│  media.scoreplayer-myb.top ─────────▶ sp-minio :9002                 │
+   SSH 入口 ─────────────▶│  ssh.scoreplayer-myb.top ───────────▶ Dropbear 192.168.1.2:22        │
    Webhook ─────────────▶│  webhook.scoreplayer-myb.top ───────▶ sp-webhook :9003               │
    Watchtower            │  watchtower 每 5 分钟检查镜像并更新 sp-app                            │
                          └──────────────────────────────────────────────────────────────────────┘
@@ -24,6 +25,7 @@
 | 主入口 | `https://scoreplayer-myb.top` | Cloudflare Tunnel，转发到 `http://172.17.0.1:9000` |
 | 媒体域名 | `https://media.scoreplayer-myb.top` | Cloudflare Tunnel，转发到 `http://172.17.0.1:9002`，指向本地 MinIO S3 端口并绕过 app 代理 |
 | Webhook | `https://webhook.scoreplayer-myb.top` | Cloudflare Tunnel，转发到 `http://172.17.0.1:9003`，触发软路由自动部署 |
+| 外网 SSH | `ssh.scoreplayer-myb.top` / `ssh score-router` | Cloudflare Tunnel Access SSH，转发到软路由 Dropbear `ssh://192.168.1.2:22` |
 | 备用入口 | `https://istoreos.tail11098d.ts.net` | Tailscale 备用访问路径 |
 | 最终兜底 | `https://score-player.onrender.com` | Render 云端兜底服务 |
 
@@ -153,6 +155,8 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
        service: http://172.17.0.1:9003            # 新增
      - hostname: media.scoreplayer-myb.top
        service: http://172.17.0.1:9002
+     - hostname: ssh.scoreplayer-myb.top       # 外网 SSH
+       service: ssh://192.168.1.2:22           # Dropbear 仅监听 LAN IP
      - service: http_status:404
    ```
 
@@ -163,6 +167,46 @@ GitHub Actions ──POST──▶ https://webhook.scoreplayer-myb.top/deploy?to
 > 说明：`sp-webhook` 通过 `172.17.0.1:9003` 暴露给宿主机，与 cloudflared（`network_mode: host`）访问 `sp-app` 的 `172.17.0.1:9000` 方式保持一致；由于该端口只绑定在 docker0 网关地址且请求需带正确 token，不会额外暴露到局域网。token 不匹配返回 `401`，未配置 `WEBHOOK_TOKEN` 返回 `500`。
 
 > 注意：`migrate.sh` 不再内嵌 `docker-compose.yml` 与 `webhook/server.py`，而是在运行时通过 GitHub API 下载 `main` 分支上的最新版本；后续调整 compose 或 webhook 服务时，只需保证仓库模板已更新并合入 `main`。Cloudflare `config.yml` 仍由 `migrate.sh` 写出，若调整 Tunnel ingress 仍需同步更新迁移脚本。
+
+## 外网 SSH 访问软路由（Cloudflare Tunnel Access）
+
+当前软路由已通过 Cloudflare Tunnel 暴露 SSH 入口，外网设备可使用 `cloudflared access ssh` 连接。Tunnel 仍是本地配置文件管理模式，Zero Trust 的 Routes 页面显示 `Published application` 只表示本机 `cloudflared` 已上报该 hostname，不等同于 Cloudflare DNS 自动创建了记录；DNS 仍需在 `dash.cloudflare.com` 的 `scoreplayer-myb.top` → DNS → Records 中手动维护一条 `ssh` CNAME。
+
+软路由本机 `/root/.cloudflared/config.yml` 的 `ingress` 规则需在 `http_status:404` 之前包含以下配置：
+
+```yaml
+  - hostname: ssh.scoreplayer-myb.top
+    service: ssh://192.168.1.2:22
+```
+
+这里必须使用 `ssh://192.168.1.2:22`，不要写成 `ssh://localhost:22` 或 `ssh://127.0.0.1:22`。当前 iStoreOS 的 Dropbear 只监听软路由 LAN 地址 `192.168.1.2:22`，`localhost` 会被 `cloudflared` 解析到 IPv6 `[::1]:22` 并导致 `connect: connection refused`；即使 `sp-cloudflared` 使用 host 网络模式，也应显式指向该 LAN IP。修改配置后执行 `docker restart sp-cloudflared` 生效，并用 `docker logs --tail=80 sp-cloudflared` 检查是否仍有 origin connect 错误。
+
+Cloudflare DNS 侧需要手动新增或保留以下记录：
+
+```text
+Type: CNAME
+Name: ssh
+Target: 91086842-3bb6-4fc7-b11f-d65b0824c36a.cfargotunnel.com
+Proxy status: Proxied
+TTL: Auto
+```
+
+外网客户端需要安装 `cloudflared` CLI。macOS 可使用 `brew install cloudflared`，随后可直接执行：
+
+```bash
+ssh -l root -o ProxyCommand="cloudflared access ssh --hostname ssh.scoreplayer-myb.top" ssh.scoreplayer-myb.top
+```
+
+为简化日常使用，可在外网客户端 `~/.ssh/config` 中添加别名：
+
+```sshconfig
+Host score-router
+  HostName ssh.scoreplayer-myb.top
+  User root
+  ProxyCommand cloudflared access ssh --hostname %h
+```
+
+之后直接执行 `ssh score-router` 即可登录软路由。若客户端报 `lookup ssh.scoreplayer-myb.top: no such host`，优先检查 Cloudflare DNS Records 中是否真实存在 `ssh` CNAME；若 `sp-cloudflared` 日志出现 `dial tcp [::1]:22: connect: connection refused`，说明 SSH ingress 仍错误指向 `localhost`，需改回 `ssh://192.168.1.2:22`。
 
 ## 分支与版本状态
 
