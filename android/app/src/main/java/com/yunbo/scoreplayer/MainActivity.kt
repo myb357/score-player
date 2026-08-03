@@ -23,6 +23,7 @@ import java.net.URL
 
 class MainActivity : Activity() {
     private val internalBaseUrl = "http://192.168.1.2:9000"
+    private val cloudBaseUrl = "https://score-player.onrender.com"
     private val externalBaseUrl = "https://scoreplayer-myb.top"
     private val probeTimeoutMillis = 2_000
     private val imagePickRequestCode = 1001
@@ -75,9 +76,12 @@ class MainActivity : Activity() {
         probing = true
 
         mainScope.launch {
-            val internalReachable = withContext(Dispatchers.IO) { probeInternalUrl() }
-            val targetBaseUrl = if (internalReachable) internalBaseUrl else externalBaseUrl
-            bridge.setActiveBaseUrl(targetBaseUrl, internalReachable)
+            val targetBaseUrl = withContext(Dispatchers.IO) { selectReachableBaseUrl() }
+            bridge.setActiveBaseUrl(
+                baseUrl = targetBaseUrl,
+                internalReachable = targetBaseUrl == internalBaseUrl,
+                cloudReachable = targetBaseUrl == cloudBaseUrl,
+            )
 
             val shouldLoad = forceReload || currentBaseUrl == null || currentBaseUrl != targetBaseUrl
             currentBaseUrl = targetBaseUrl
@@ -89,10 +93,18 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun probeInternalUrl(): Boolean {
+    private fun selectReachableBaseUrl(): String {
+        return when {
+            probeUrl(internalBaseUrl) -> internalBaseUrl
+            probeUrl(cloudBaseUrl) -> cloudBaseUrl
+            else -> externalBaseUrl
+        }
+    }
+
+    private fun probeUrl(baseUrl: String): Boolean {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL(internalBaseUrl).openConnection() as HttpURLConnection).apply {
+            connection = (URL(baseUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "HEAD"
                 connectTimeout = probeTimeoutMillis
                 readTimeout = probeTimeoutMillis
@@ -120,17 +132,19 @@ class MainActivity : Activity() {
     class AndroidBridge(private val activity: MainActivity) {
         private val prefs = activity.getSharedPreferences("score_player", Context.MODE_PRIVATE)
         private var lastPickedImageUri: Uri? = null
-        @Volatile private var activeBaseUrl: String = activity.externalBaseUrl
+        @Volatile private var activeBaseUrl: String = activity.cloudBaseUrl
         @Volatile private var internalReachable: Boolean = false
+        @Volatile private var cloudReachable: Boolean = false
 
         fun saveLastPickedImageUri(uri: Uri) {
             lastPickedImageUri = uri
             activity.contentResolver.takePersistableUriPermissionIfPossible(uri)
         }
 
-        fun setActiveBaseUrl(baseUrl: String, reachable: Boolean) {
+        fun setActiveBaseUrl(baseUrl: String, internalReachable: Boolean, cloudReachable: Boolean) {
             activeBaseUrl = baseUrl
-            internalReachable = reachable
+            this.internalReachable = internalReachable
+            this.cloudReachable = cloudReachable
         }
 
         @JavascriptInterface
@@ -138,6 +152,9 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun isInternalNetworkReachable(): Boolean = internalReachable
+
+        @JavascriptInterface
+        fun isCloudEndpointReachable(): Boolean = cloudReachable
 
         @JavascriptInterface
         fun saveToken(token: String) {

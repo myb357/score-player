@@ -105,17 +105,23 @@ def run_deploy():
     if not ok:
         return False, detail
 
-    cmd = compose_base_cmd() + ["-f", COMPOSE_FILE, "up", "-d", "--no-deps", COMPOSE_SERVICE]
+    compose_cmd = compose_base_cmd()
+    rm_cmd = compose_cmd + ["-f", COMPOSE_FILE, "rm", "-f", "-s", COMPOSE_SERVICE]
+    up_cmd = compose_cmd + ["-f", COMPOSE_FILE, "up", "-d", "--no-deps", "--force-recreate", COMPOSE_SERVICE]
     try:
-        proc = run_cmd(cmd)
+        rm_proc = run_cmd(rm_cmd)
+        if rm_proc.returncode != 0:
+            printable = " ".join(rm_cmd)
+            return False, f"command exited {rm_proc.returncode}: {printable}"
+        proc = run_cmd(up_cmd)
     except Exception as e:  # noqa: BLE001
-        printable = " ".join(cmd)
+        printable = " ".join(up_cmd)
         log(f"命令异常: {printable} -> {e}")
         return False, f"command failed: {printable}: {e}"
     if proc.returncode != 0:
-        printable = " ".join(cmd)
+        printable = " ".join(up_cmd)
         return False, f"command exited {proc.returncode}: {printable}"
-    return True, f"pulled={pulled_image}; compose_image={COMPOSE_IMAGE}; {' '.join(cmd)}"
+    return True, f"pulled={pulled_image}; compose_image={COMPOSE_IMAGE}; {' '.join(up_cmd)}"
 
 
 class DeployHandler(BaseHTTPRequestHandler):

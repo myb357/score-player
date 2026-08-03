@@ -505,16 +505,23 @@
 
     async function init(){
       let hasLocal=false;
+      let hasDownloaded=false;
+      // 已下载谱子必须优先使用 IndexedDB 中的本地 blob，避免播放页打开后又回源拉图片/音频。
+      try{
+        const meta=await ScoreDB.getMeta(scoreId);
+        if(meta){
+          await applyScore(metaToScore(meta));
+          hasLocal=true;
+          hasDownloaded=true;
+          toast('已加载本地下载内容','ok');
+        }
+      }catch(e){/* ignore */}
+      if(hasDownloaded) return;
+
       const cached=readCachedScore();
       if(cached&&cached.score){
         await applyScore(cached.score);
         hasLocal=true;
-      }else{
-        // 无 localStorage 详情缓存时，尝试从离线下载 (IndexedDB) 直接构建
-        try{
-          const meta=await ScoreDB.getMeta(scoreId);
-          if(meta){ await applyScore(metaToScore(meta)); hasLocal=true; }
-        }catch(e){/* ignore */}
       }
       try{
         const res=await apiFetch('/api/scores/'+scoreId,{cache:'no-store'});
@@ -526,7 +533,7 @@
         await applyScore(fresh);
       }catch(e){
         if(!hasLocal)toast('加载失败','err');
-        else toast('已离线加载本地下载内容','ok');
+        else toast('已使用本地缓存内容','ok');
       }
     }
 

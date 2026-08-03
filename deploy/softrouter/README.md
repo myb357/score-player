@@ -210,7 +210,7 @@ Host score-router
 
 ## 分支与版本状态
 
-当前生产发布统一走 `main` 分支，旧软路由自动部署分支已删除；部署文档、一键迁移命令、迁移脚本下载源和 GitHub Actions 分支触发均应保持在 `main`。当前 Android APK 版本为 v1.3.3（`versionCode=15`，`versionName=1.3.3`），软路由部署通过 ACR 主镜像源、GHCR 备用镜像源和 Cloudflare Webhook 主动触发完成。
+当前生产发布统一走 `main` 分支，旧软路由自动部署分支已删除；部署文档、一键迁移命令、迁移脚本下载源和 GitHub Actions 分支触发均应保持在 `main`。当前 Android APK 版本为 v1.3.4（`versionCode=16`，`versionName=1.3.4`），软路由部署通过 ACR 主镜像源、GHCR 备用镜像源和 Cloudflare Webhook 主动触发完成。
 
 ## APK 内网优先端点
 
@@ -218,10 +218,11 @@ Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址
 
 ```text
 内网优先入口：http://192.168.1.2:9000
-外网兜底入口：https://scoreplayer-myb.top
+云端次级入口：https://score-player.onrender.com
+软路由外网兜底入口：https://scoreplayer-myb.top
 ```
 
-冷启动时 APK 会对 `http://192.168.1.2:9000` 发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，不可达时加载外网 Cloudflare Tunnel 地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()` 与 `AndroidBridge.isInternalNetworkReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。当前 Android 版本号已对齐为 1.3.3，GitHub Actions 会在 Docker 镜像构建前自动构建 APK 并打入镜像，避免网页下载到过期手工包。
+冷启动时 APK 会按 `http://192.168.1.2:9000` → `https://score-player.onrender.com` → `https://scoreplayer-myb.top` 的顺序发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，内网不可达但 Render 可达时加载 Render + 云端对象存储，Render 也不可达时再加载软路由 Cloudflare Tunnel 外网地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()`、`AndroidBridge.isInternalNetworkReachable()` 与 `AndroidBridge.isCloudEndpointReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。当前 Android 版本号已对齐为 1.3.4，GitHub Actions 会在 Docker 镜像构建前自动构建 APK 并打入镜像，避免网页下载到过期手工包。
 
 ## 历史同步任务说明
 
@@ -232,5 +233,5 @@ Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址
 1. `https://scoreplayer-myb.top/api/v1/ping` 返回 `pong`。
 2. `https://media.scoreplayer-myb.top` 能通过 Cloudflare Tunnel 访问本地 MinIO 暴露的媒体资源。
 3. `sp-postgres`、`sp-minio`、`sp-app`、`sp-cloudflared`、`watchtower`、`sp-webhook` 均处于运行状态。
-4. APK 冷启动优先探测 `http://192.168.1.2:9000`；内网可达时使用内网地址，不可达时使用 `https://scoreplayer-myb.top`，并且每次回到前台重新探测。
+4. APK 冷启动优先探测 `http://192.168.1.2:9000`；内网不可达时探测并优先使用 `https://score-player.onrender.com`，Render 也不可达时才使用 `https://scoreplayer-myb.top`，并且每次回到前台重新探测。
 5. GitHub Actions 推送新镜像后，Watchtower 能在约 5 分钟内更新 `sp-app`；Webhook 链路配置完成后，`https://webhook.scoreplayer-myb.top/health` 返回 `{"status":"ok"}`，且 CI 的 “Trigger soft router deploy via Webhook” 步骤成功触发 `sp-app` 即时更新。
