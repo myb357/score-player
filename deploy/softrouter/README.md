@@ -222,7 +222,7 @@ Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址
 软路由外网兜底入口：https://scoreplayer-myb.top
 ```
 
-冷启动时 APK 会按 `http://192.168.1.2:9000` → `https://score-player.onrender.com` → `https://scoreplayer-myb.top` 的顺序发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，内网不可达但 Render 可达时加载 Render + 云端对象存储，Render 也不可达时再加载软路由 Cloudflare Tunnel 外网地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()`、`AndroidBridge.isInternalNetworkReachable()` 与 `AndroidBridge.isCloudEndpointReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。当前 Android 版本号已对齐为 1.3.4，GitHub Actions 会在 Docker 镜像构建前自动构建 APK 并打入镜像，避免网页下载到过期手工包。
+冷启动时 APK 会按 `http://192.168.1.2:9000` → `https://score-player.onrender.com` → `https://scoreplayer-myb.top` 的顺序发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，内网不可达但 Render 可达时加载 Render + 云端对象存储，Render 也不可达时再加载软路由 Cloudflare Tunnel 外网地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()`、`AndroidBridge.isInternalNetworkReachable()` 与 `AndroidBridge.isCloudEndpointReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。当前 Android 版本号已对齐为 1.3.4，GitHub Actions 会在 Docker 镜像构建前强制构建 debug APK 并打入镜像，同时校验 APK 不得小于 1.5MB，避免网页下载到异常偏小的 release/旧包。
 
 ## 历史同步任务说明
 

@@ -35,27 +35,27 @@ jobs:
           cd android
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew assembleRelease || ./gradlew assembleDebug
+            ./gradlew assembleDebug
           else
-            gradle assembleRelease || gradle assembleDebug
+            gradle assembleDebug
           fi
 
       - name: Prepare APK for Docker
         run: |
-          APK_PATH=""
-          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
-            APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
-          elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
-            APK_PATH="android/app/build/outputs/apk/release/app-release-unsigned.apk"
-          elif [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
-            APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
-          else
-            echo "No Android APK was produced."
+          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK_PATH" ]; then
+            echo "Debug Android APK was not produced at $APK_PATH."
+            exit 1
+          fi
+          APK_SIZE=$(stat -c%s "$APK_PATH")
+          if [ "$APK_SIZE" -lt 1500000 ]; then
+            echo "APK is unexpectedly small: ${APK_SIZE} bytes. Refusing to publish."
             exit 1
           fi
           mkdir -p static/android score_app/static/android
           cp "$APK_PATH" static/android/score-player.apk
           cp "$APK_PATH" score_app/static/android/score-player.apk
+          ls -lh static/android/score-player.apk score_app/static/android/score-player.apk
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
