@@ -113,7 +113,7 @@ MEDIA_PROXY=1
 COOKIE_SECURE=0
 ```
 
-`MEDIA_PROXY=1` 是软路由本地 MinIO 部署下的正确取值。本地 MinIO 生成的预签名 URL 指向内网 `minio:9000`，平板和浏览器无法直连该内网地址，因此由 score-player 通过 `/api/media` 回源转发媒体字节流（支持 HTTP Range），而不是让客户端直连对象存储。`MEDIA_PROXY=0` 仅用于 Render / Backblaze B2 等公网对象存储模式：此时 app 会 302 跳转到公网可达的预签名 URL，并使用 `S3_PUBLIC_ENDPOINT` 作为 S3 client endpoint，使签名中的 host 与外网访问域名一致。`COOKIE_SECURE=0` 与当前软路由本地链路兼容，避免本地或代理路径下 Cookie 写入异常。
+`MEDIA_PROXY=1` 是软路由本地 MinIO 部署下的正确取值。本地 MinIO 生成的预签名 URL 指向内网 `minio:9000`，平板和浏览器无法直连该内网地址，因此由 score-player 通过 `/api/media` 回源转发媒体字节流（支持 HTTP Range），而不是让客户端直连对象存储。当前代理按 1MiB 分块从对象存储转发，并返回 `Cache-Control: public, max-age=604800, immutable`，用于降低 Cloudflare Tunnel 下的小块传输开销，并让重复打开同一谱页/伴奏时更容易命中浏览器或 Cloudflare 缓存。`MEDIA_PROXY=0` 仅用于 Render / Backblaze B2 等公网对象存储模式：此时 app 会 302 跳转到公网可达的预签名 URL，并使用 `S3_PUBLIC_ENDPOINT` 作为 S3 client endpoint，使签名中的 host 与外网访问域名一致。`COOKIE_SECURE=0` 与当前软路由本地链路兼容，避免本地或代理路径下 Cookie 写入异常。
 
 ## 镜像与 CI/CD
 

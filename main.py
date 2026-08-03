@@ -1957,7 +1957,10 @@ async def serve_media(score_id: int, filename: str, request: Request):
         or mimetypes.guess_type(filename)[0]
         or "application/octet-stream"
     )
-    headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"}
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=604800, immutable",
+    }
     status = 200
     content_range = obj.get("ContentRange")
     if rng and content_range:
@@ -1969,7 +1972,7 @@ async def serve_media(score_id: int, filename: str, request: Request):
 
     def _iter():
         try:
-            for chunk in body.iter_chunks(chunk_size=64 * 1024):
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
                 yield chunk
         finally:
             body.close()
