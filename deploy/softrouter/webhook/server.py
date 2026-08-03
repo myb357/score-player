@@ -106,11 +106,11 @@ def run_deploy():
         return False, detail
 
     compose_cmd = compose_base_cmd()
-    rm_cmd = compose_cmd + ["-f", COMPOSE_FILE, "rm", "-f", "-s", COMPOSE_SERVICE]
+    rm_cmd = ["docker", "rm", "-f", "sp-app"]
     up_cmd = compose_cmd + ["-f", COMPOSE_FILE, "up", "-d", "--no-deps", "--force-recreate", COMPOSE_SERVICE]
     try:
         rm_proc = run_cmd(rm_cmd)
-        if rm_proc.returncode != 0:
+        if rm_proc.returncode != 0 and "No such container" not in rm_proc.stderr:
             printable = " ".join(rm_cmd)
             return False, f"command exited {rm_proc.returncode}: {printable}"
         proc = run_cmd(up_cmd)
