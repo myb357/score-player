@@ -30,30 +30,19 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Android APK
+      - name: Verify committed APK for Docker
         run: |
-          cd android
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            ./gradlew assembleDebug
-          else
-            gradle assembleDebug
-          fi
-
-      - name: Prepare APK for Docker
-        run: |
-          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          APK_PATH="static/android/score-player.apk"
           if [ ! -f "$APK_PATH" ]; then
-            echo "Debug Android APK was not produced at $APK_PATH."
+            echo "Committed APK was not found at $APK_PATH."
             exit 1
           fi
           APK_SIZE=$(stat -c%s "$APK_PATH")
           if [ "$APK_SIZE" -lt 1500000 ]; then
-            echo "APK is unexpectedly small: ${APK_SIZE} bytes. Refusing to publish."
+            echo "Committed APK is unexpectedly small: ${APK_SIZE} bytes. Refusing to publish."
             exit 1
           fi
-          mkdir -p static/android score_app/static/android
-          cp "$APK_PATH" static/android/score-player.apk
+          mkdir -p score_app/static/android
           cp "$APK_PATH" score_app/static/android/score-player.apk
           ls -lh static/android/score-player.apk score_app/static/android/score-player.apk
 
