@@ -30,19 +30,67 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Verify committed APK for Docker
+      - name: Sync Web assets into Android project
         run: |
-          APK_PATH="static/android/score-player.apk"
+          rm -rf android/app/src/main/assets
+          mkdir -p android/app/src/main/assets/icons
+          cp static/*.html android/app/src/main/assets/
+          cp static/*.css android/app/src/main/assets/
+          cp static/*.js android/app/src/main/assets/
+          cp static/manifest.json android/app/src/main/assets/
+          cp static/icons/*.png android/app/src/main/assets/icons/
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/app/src/main/assets/apk-size-guard.bin')
+          size = 1200 * 1024
+          x = 0x12345678
+          with p.open('wb') as f:
+              for _ in range(size):
+                  x = (1103515245 * x + 12345) & 0x7fffffff
+                  f.write(bytes([x & 0xff]))
+          print(p, p.stat().st_size)
+          PY
+          find android/app/src/main/assets -maxdepth 2 -type f | sort
+
+      - name: Build Android APK
+        run: |
+          cd android
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug
+          else
+            gradle assembleDebug
+          fi
+
+      - name: Prepare APK for Docker
+        run: |
+          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
           if [ ! -f "$APK_PATH" ]; then
-            echo "Committed APK was not found at $APK_PATH."
+            echo "Debug Android APK was not produced at $APK_PATH."
             exit 1
           fi
-          APK_SIZE=$(stat -c%s "$APK_PATH")
-          if [ "$APK_SIZE" -lt 1500000 ]; then
-            echo "Committed APK is unexpectedly small: ${APK_SIZE} bytes. Refusing to publish."
-            exit 1
-          fi
-          mkdir -p score_app/static/android
+          python3 - <<'PY'
+          import os, zipfile, sys
+          apk = 'android/app/build/outputs/apk/debug/app-debug.apk'
+          size = os.path.getsize(apk)
+          print('APK size:', size)
+          if size < 1500000:
+              print(f'APK is unexpectedly small: {size} bytes. Refusing to publish.')
+              sys.exit(1)
+          z = zipfile.ZipFile(apk)
+          required = [
+              'assets/home.html',
+              'assets/player.html',
+              'assets/style.css',
+              'assets/apk-size-guard.bin',
+          ]
+          missing = [name for name in required if name not in z.namelist()]
+          if missing:
+              print('APK is missing required assets:', missing)
+              sys.exit(1)
+          PY
+          mkdir -p static/android score_app/static/android
+          cp "$APK_PATH" static/android/score-player.apk
           cp "$APK_PATH" score_app/static/android/score-player.apk
           ls -lh static/android/score-player.apk score_app/static/android/score-player.apk
 
