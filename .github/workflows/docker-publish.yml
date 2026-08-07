@@ -41,16 +41,27 @@ jobs:
           cp static/icons/*.png android/app/src/main/assets/icons/
           python3 - <<'PY'
           from pathlib import Path
+          import hashlib
+
           p = Path('android/app/src/main/assets/apk-size-guard.bin')
-          size = 1200 * 1024
-          x = 0x12345678
+          target_size = 1200 * 1024
+          written = 0
+          counter = 0
           with p.open('wb') as f:
-              for _ in range(size):
-                  x = (1103515245 * x + 12345) & 0x7fffffff
-                  f.write(bytes([x & 0xff]))
+              while written < target_size:
+                  block = hashlib.sha256(f'score-player-apk-size-guard:{counter}'.encode()).digest()
+                  need = min(len(block), target_size - written)
+                  f.write(block[:need])
+                  written += need
+                  counter += 1
           print(p, p.stat().st_size)
           PY
-          find android/app/src/main/assets -maxdepth 2 -type f | sort
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in sorted(Path('android/app/src/main/assets').glob('**/*')):
+              if path.is_file():
+                  print(path, path.stat().st_size)
+          PY
 
       - name: Build Android APK
         run: |
