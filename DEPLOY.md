@@ -47,6 +47,8 @@ curl -fsS https://scoreplayer-myb.top/api/v1/ping
 
 CI 采用「Webhook 主动部署」：GitHub Actions 在镜像推送完成后，会经 Cloudflare Tunnel 暴露的 `https://webhook.scoreplayer-myb.top/deploy?token=<WEBHOOK_TOKEN>` 向软路由的 `sp-webhook` 服务发起 `POST` 请求（带 `--fail-with-body` 与 `--retry 3 --retry-delay 5 --retry-all-errors` 重试，并附带诊断用 JSON body）。Render 云端兜底服务通过 GitHub Auto-Deploy 自动更新，不需要 CI 额外触发。`sp-webhook` 校验 query param 中的 token 通过后，在软路由本地优先执行 `docker pull` 最新阿里云 ACR 镜像；若阿里云 ACR 拉取失败，则降级拉取 GHCR 镜像，并将实际拉到的镜像 tag 为 compose 文件中的阿里云 ACR 镜像标签，再执行 `docker-compose up -d --no-deps score-player` 重启应用容器。容器内的 `docker` / `docker-compose` 直接从宿主机 `/usr/bin` 挂载，不再通过 `apk` 动态安装。该链路要求 GitHub 仓库 Secret `WEBHOOK_TOKEN` 与软路由 `.env` 中的 `WEBHOOK_TOKEN` 一致。未配置或 token 不匹配时软路由部署步骤会失败，Watchtower 仍作为软路由默认更新机制兜底。已移除原先基于 Tailscale + SSH 的部署步骤及 `SOFTROUTER_SSH_KEY`、`TAILSCALE_AUTH_KEY` 相关配置。
 
+软路由同步方案位于 `deploy/softrouter/sync/`，通过 `sp-sync` 容器按 `crontab` 定时执行本地 PostgreSQL / MinIO 到云端 Supabase / Backblaze B2 的单向同步。`check_consistency.sh` 用于只读一致性巡检：检查本地 PostgreSQL 核心表行数，并对比本地 MinIO 与云端 B2 的对象数量和总大小；当 `.env.sync` 配置了 `CLOUD_DATABASE_URL` 时，还会只读查询云端 Supabase 核心表行数。
+
 当前生产发布统一走 `main` 分支，旧软路由自动部署分支已删除；部署文档、一键迁移命令、迁移脚本下载源和 GitHub Actions 分支触发均应保持在 `main`。
 
 ## Cloudflare Tunnel 外网 SSH

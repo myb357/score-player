@@ -224,9 +224,13 @@ Android APK 的原生 Kotlin 入口负责在 WebView 加载前选择访问地址
 
 冷启动时 APK 会按 `http://192.168.1.2:9000` → `https://score-player.onrender.com` → `https://scoreplayer-myb.top` 的顺序发起轻量 HTTP HEAD 探测，连接和读取超时均为 2 秒；内网可达时直接加载内网地址，内网不可达但 Render 可达时加载 Render + 云端对象存储，Render 也不可达时再加载软路由 Cloudflare Tunnel 外网地址。每次 App 进入前台都会重新探测，以适配网络环境切换。探测和 URL 选择均在原生 Android 侧完成，不依赖 WebView JS；当前选择结果通过 `AndroidBridge.getActiveBaseUrl()`、`AndroidBridge.isInternalNetworkReachable()` 与 `AndroidBridge.isCloudEndpointReachable()` 暴露给页面按需读取。浏览器 Web 访问仍走同源相对路径，不受 APK 端点探测逻辑影响。当前 Android 版本号已对齐为 1.3.4。生产发布链路会在 CI 中先把仓库 `static/` 资源同步到 Android assets，再生成基于 SHA-256 counter stream 的 `apk-size-guard.bin`，随后执行 `assembleDebug` 构建 APK；打入 Docker 镜像前会校验 APK 大小不得小于 1.5MB，且必须包含 `assets/home.html`、`assets/player.html`、`assets/style.css` 和 `assets/apk-size-guard.bin`，避免网页下载到异常偏小的小包。
 
-## 历史同步任务说明
+## 同步与一致性巡检说明
 
-`sync/` 目录保留了早期“本地 ▶ 云端”的同步方案，包含数据库同步到 Supabase、对象同步到 Backblaze B2 的脚本和容器配置。当前实际生产主访问已经切到软路由本地栈，Render 仅作为最终兜底；如需重新启用云端备份同步，应先确认当前数据流向和覆盖策略，再启动同步容器。
+`sync/` 目录保留“本地 ▶ 云端”的同步方案，包含数据库同步到 Supabase、对象同步到 Backblaze B2 的脚本和容器配置。同步容器依赖两个不入库的线上配置文件：`.env.sync` 和 `rclone.conf`。其中 `.env.sync` 必须显式配置 `LOCAL_DATABASE_URL`、`CLOUD_DATABASE_URL`、`SYNC_MODE`、`SYNC_SESSIONS`、`B2_BUCKET`、`RCLONE_OP`；`rclone.conf` 必须配置 `[minio]` 与 `[b2]` 两个远端。
+
+`check_consistency.sh` 是只读一致性巡检入口，会读取本地 PostgreSQL 核心表行数，并通过 rclone 对比本地 MinIO 与云端 B2 的对象数量和总大小；当 `.env.sync` 中配置了 `CLOUD_DATABASE_URL` 时，还会只读查询云端 Supabase 核心表行数。该脚本不执行任何写入，不会修改本地或云端数据。
+
+当前实际生产主访问已经切到软路由本地栈，Render 仅作为最终兜底；启用 `sp-sync` 前必须确认 Supabase 连接串和 B2 凭据可用，避免同步容器周期性报错。
 
 ## 验收要点
 
