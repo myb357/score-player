@@ -188,6 +188,12 @@
       biometricBtn.textContent = '🔒 指纹快速登录';
       if (success && token) {
         try { localStorage.setItem('auth_token', token); } catch (e) {}
+        try {
+          if (window.AndroidBridge && typeof window.AndroidBridge.openHomeAfterBiometric === 'function') {
+            window.AndroidBridge.openHomeAfterBiometric();
+            return;
+          }
+        } catch (e) {}
         goHome();
         return;
       }
@@ -197,7 +203,14 @@
     if (hasNativeBiometricLogin()) {
       biometricBtn.style.display = 'inline-flex';
       biometricHint.style.display = 'block';
-      setTimeout(requestBiometricLogin, 350);
+      try {
+        if (sessionStorage.getItem('biometric_prompted_once') !== '1') {
+          sessionStorage.setItem('biometric_prompted_once', '1');
+          setTimeout(requestBiometricLogin, 350);
+        }
+      } catch (e) {
+        setTimeout(requestBiometricLogin, 350);
+      }
     }
 
     biometricBtn.addEventListener('click', requestBiometricLogin);

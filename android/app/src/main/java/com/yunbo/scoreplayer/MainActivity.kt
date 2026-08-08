@@ -118,7 +118,13 @@ class MainActivity : Activity() {
 
         mainScope.launch {
             val targetBaseUrl = withContext(Dispatchers.IO) { selectReachableBaseUrl() }
-            val targetUrl = targetBaseUrl ?: offlineHttpEntryUrl()
+            val targetUrl = when {
+                bridge.getToken().isNotBlank() && !bridge.isBiometricUnlocked() -> {
+                    val base = targetBaseUrl ?: bridge.getLastBaseUrl().ifBlank { cloudBaseUrl }
+                    "$base/login"
+                }
+                else -> targetBaseUrl ?: offlineHttpEntryUrl()
+            }
             bridge.setActiveBaseUrl(
                 baseUrl = targetBaseUrl ?: "",
                 internalReachable = targetBaseUrl == internalBaseUrl,
@@ -157,15 +163,17 @@ class MainActivity : Activity() {
         if (!bridge.isOfflineMode()) return null
         val host = uri.host ?: return null
         if (host !in listOf("192.168.1.2", "score-player.onrender.com", "scoreplayer-myb.top")) return null
-        val assetName = when (uri.path ?: "/") {
-            "/", "" -> "home.html"
-            "/login" -> "login.html"
-            "/new" -> "new.html"
-            "/users" -> "users.html"
-            "/downloads" -> "downloads.html"
-            "/static/style.css", "/style.css" -> "style.css"
-            "/static/sw.js", "/sw.js" -> "sw.js"
-            "/static/manifest.json", "/manifest.json" -> "manifest.json"
+        val path = uri.path ?: "/"
+        val assetName = when {
+            path == "/" || path == "" -> "home.html"
+            path == "/login" -> "login.html"
+            path == "/new" -> "new.html"
+            path == "/users" -> "users.html"
+            path == "/downloads" -> "downloads.html"
+            path.startsWith("/player/") -> "player.html"
+            path == "/static/style.css" || path == "/style.css" -> "style.css"
+            path == "/static/sw.js" || path == "/sw.js" -> "sw.js"
+            path == "/static/manifest.json" || path == "/manifest.json" -> "manifest.json"
             else -> null
         } ?: return null
         val mimeType = when {
@@ -217,6 +225,7 @@ class MainActivity : Activity() {
         @Volatile private var internalReachable: Boolean = false
         @Volatile private var cloudReachable: Boolean = false
         @Volatile private var offlineMode: Boolean = false
+        @Volatile private var biometricUnlocked: Boolean = false
 
         fun saveLastPickedImageUri(uri: Uri) {
             lastPickedImageUri = uri
@@ -236,6 +245,8 @@ class MainActivity : Activity() {
         fun getLastBaseUrl(): String = prefs.getString("last_base_url", activity.cloudBaseUrl) ?: activity.cloudBaseUrl
 
         fun isOfflineMode(): Boolean = offlineMode
+
+        fun isBiometricUnlocked(): Boolean = biometricUnlocked
 
         @JavascriptInterface
         fun getActiveBaseUrl(): String = activeBaseUrl
@@ -298,6 +309,7 @@ class MainActivity : Activity() {
                     activity.mainExecutor,
                     object : BiometricPrompt.AuthenticationCallback() {
                         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                            biometricUnlocked = true
                             dispatchBiometricResult(true, "指纹验证成功", token)
                         }
 
@@ -321,6 +333,15 @@ class MainActivity : Activity() {
                     "window.onBiometricAuthResult && window.onBiometricAuthResult($success, '$safeMessage', '$safeToken')",
                     null,
                 )
+            }
+        }
+
+        @JavascriptInterface
+        fun openHomeAfterBiometric() {
+            biometricUnlocked = true
+            val target = getLastBaseUrl().ifBlank { activity.cloudBaseUrl }
+            activity.runOnUiThread {
+                activity.webView.loadUrl(target)
             }
         }
 
