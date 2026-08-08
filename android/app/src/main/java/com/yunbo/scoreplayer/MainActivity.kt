@@ -80,7 +80,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         if (::webView.isInitialized) {
-            probeAndLoad(forceReload = false)
+            probeAndLoad(forceReload = bridge.getToken().isNotBlank())
         }
     }
 
