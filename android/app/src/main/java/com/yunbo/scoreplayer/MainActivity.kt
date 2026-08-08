@@ -13,6 +13,8 @@ import android.os.CancellationSignal
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -56,7 +58,19 @@ class MainActivity : Activity() {
         webView.settings.allowFileAccessFromFileURLs = true
         webView.settings.allowUniversalAccessFromFileURLs = true
         webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
-        webView.webViewClient = WebViewClient()
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                return request?.url?.let { offlineAssetResponse(it) }
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                view?.evaluateJavascript(
+                    "document.documentElement.classList.add('android-app');document.body&&document.body.classList.add('android-app-body');",
+                    null,
+                )
+            }
+        }
         webView.webChromeClient = WebChromeClient()
         webView.addJavascriptInterface(bridge, "AndroidBridge")
 
@@ -96,7 +110,7 @@ class MainActivity : Activity() {
 
         mainScope.launch {
             val targetBaseUrl = withContext(Dispatchers.IO) { selectReachableBaseUrl() }
-            val targetUrl = targetBaseUrl ?: offlineEntryUrl()
+            val targetUrl = if (targetBaseUrl == null) offlineHttpEntryUrl() else if (bridge.getToken().isNotBlank()) "$targetBaseUrl/login" else targetBaseUrl
             bridge.setActiveBaseUrl(
                 baseUrl = targetBaseUrl ?: "",
                 internalReachable = targetBaseUrl == internalBaseUrl,
@@ -124,6 +138,40 @@ class MainActivity : Activity() {
 
     private fun offlineEntryUrl(): String {
         return offlineLoginUrl
+    }
+
+    private fun offlineHttpEntryUrl(): String {
+        val lastBaseUrl = bridge.getLastBaseUrl().ifBlank { cloudBaseUrl }
+        return if (bridge.getToken().isNotBlank()) "$lastBaseUrl/login" else lastBaseUrl
+    }
+
+    private fun offlineAssetResponse(uri: Uri): WebResourceResponse? {
+        if (!bridge.isOfflineMode()) return null
+        val host = uri.host ?: return null
+        if (host !in listOf("192.168.1.2", "score-player.onrender.com", "scoreplayer-myb.top")) return null
+        val assetName = when (uri.path ?: "/") {
+            "/", "" -> "home.html"
+            "/login" -> "login.html"
+            "/new" -> "new.html"
+            "/users" -> "users.html"
+            "/downloads" -> "downloads.html"
+            "/static/style.css", "/style.css" -> "style.css"
+            "/static/sw.js", "/sw.js" -> "sw.js"
+            "/static/manifest.json", "/manifest.json" -> "manifest.json"
+            else -> null
+        } ?: return null
+        val mimeType = when {
+            assetName.endsWith(".html") -> "text/html"
+            assetName.endsWith(".css") -> "text/css"
+            assetName.endsWith(".js") -> "application/javascript"
+            assetName.endsWith(".json") -> "application/json"
+            else -> "text/plain"
+        }
+        return try {
+            WebResourceResponse(mimeType, "UTF-8", assets.open(assetName))
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun probeUrl(baseUrl: String): Boolean {
@@ -157,9 +205,10 @@ class MainActivity : Activity() {
     class AndroidBridge(private val activity: MainActivity) {
         private val prefs = activity.getSharedPreferences("score_player", Context.MODE_PRIVATE)
         private var lastPickedImageUri: Uri? = null
-        @Volatile private var activeBaseUrl: String = activity.cloudBaseUrl
+        @Volatile private var activeBaseUrl: String = prefs.getString("last_base_url", activity.cloudBaseUrl) ?: activity.cloudBaseUrl
         @Volatile private var internalReachable: Boolean = false
         @Volatile private var cloudReachable: Boolean = false
+        @Volatile private var offlineMode: Boolean = false
 
         fun saveLastPickedImageUri(uri: Uri) {
             lastPickedImageUri = uri
@@ -167,10 +216,18 @@ class MainActivity : Activity() {
         }
 
         fun setActiveBaseUrl(baseUrl: String, internalReachable: Boolean, cloudReachable: Boolean) {
-            activeBaseUrl = baseUrl
+            offlineMode = baseUrl.isBlank()
+            if (baseUrl.isNotBlank()) {
+                activeBaseUrl = baseUrl
+                prefs.edit().putString("last_base_url", baseUrl).apply()
+            }
             this.internalReachable = internalReachable
             this.cloudReachable = cloudReachable
         }
+
+        fun getLastBaseUrl(): String = prefs.getString("last_base_url", activity.cloudBaseUrl) ?: activity.cloudBaseUrl
+
+        fun isOfflineMode(): Boolean = offlineMode
 
         @JavascriptInterface
         fun getActiveBaseUrl(): String = activeBaseUrl

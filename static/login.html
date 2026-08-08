@@ -114,7 +114,19 @@
       opts.headers = headers;
       return window.__epFetch(url, opts);
     }
-    function goHome() { location.href = IS_FILE ? 'home.html' : '/'; }
+    function goHome() {
+      if (IS_FILE) {
+        try {
+          if (window.AndroidBridge && typeof window.AndroidBridge.getActiveBaseUrl === 'function') {
+            var base = window.AndroidBridge.getActiveBaseUrl() || '';
+            if (base) { location.href = base + '/'; return; }
+          }
+        } catch (e) {}
+        location.href = 'home.html';
+        return;
+      }
+      location.href = '/';
+    }
     if (IS_FILE) {
       var _cssLink = document.createElement('link');
       _cssLink.rel = 'stylesheet'; _cssLink.href = 'style.css';
