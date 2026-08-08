@@ -130,6 +130,9 @@ input[type="number"] { -moz-appearance: textfield; }
 .auth-card .form-row { margin-bottom: 16px; }
 .auth-logo { width: 54px; height: 54px; border-radius: 15px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); display:grid; place-items:center; font-size: 28px; margin-bottom: 14px; }
 .error-msg { color: var(--danger); font-size: 13px; min-height: 18px; margin-top: 6px; }
+.biometric-login-btn { background: rgba(34,211,238,.10); border-color: rgba(34,211,238,.35); color: var(--accent-2); }
+.biometric-login-btn:hover { background: rgba(34,211,238,.16); border-color: rgba(34,211,238,.55); }
+.biometric-hint { text-align: center; margin-top: 8px; font-size: 12px; }
 
 /* ---------- Home grid / list ---------- */
 .page-head { display:flex; align-items:center; justify-content: space-between; gap: 12px; margin: 26px 0 18px; flex-wrap: wrap; }

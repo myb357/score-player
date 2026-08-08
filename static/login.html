@@ -137,6 +137,8 @@
         <input type="password" id="password" name="password" autocomplete="current-password" placeholder="请输入密码" required />
       </div>
       <button class="btn btn-primary" type="submit" id="submitBtn" style="width:100%; justify-content:center; margin-top:6px;">登 录</button>
+      <button class="btn biometric-login-btn" type="button" id="biometricBtn" style="display:none; width:100%; justify-content:center; margin-top:10px;">🔒 指纹快速登录</button>
+      <div class="hint biometric-hint" id="biometricHint" style="display:none;">默认使用指纹登录；如需更换账号，可继续使用密码登录。</div>
       <div class="error-msg" id="err"></div>
     </form>
   </div>
@@ -144,6 +146,50 @@
     const form = document.getElementById('loginForm');
     const err = document.getElementById('err');
     const btn = document.getElementById('submitBtn');
+    const biometricBtn = document.getElementById('biometricBtn');
+    const biometricHint = document.getElementById('biometricHint');
+
+    function hasNativeBiometricLogin() {
+      try {
+        return !!(window.AndroidBridge
+          && typeof window.AndroidBridge.isBiometricLoginAvailable === 'function'
+          && window.AndroidBridge.isBiometricLoginAvailable());
+      } catch (e) { return false; }
+    }
+
+    function requestBiometricLogin() {
+      if (!hasNativeBiometricLogin()) return;
+      err.textContent = '';
+      biometricBtn.disabled = true;
+      biometricBtn.innerHTML = '<span class="spinner"></span> 正在验证指纹';
+      try {
+        window.AndroidBridge.requestBiometricLogin();
+      } catch (e) {
+        biometricBtn.disabled = false;
+        biometricBtn.textContent = '🔒 指纹快速登录';
+        err.textContent = '指纹登录不可用，请使用密码登录';
+      }
+    }
+
+    window.onBiometricAuthResult = function(success, message, token) {
+      biometricBtn.disabled = false;
+      biometricBtn.textContent = '🔒 指纹快速登录';
+      if (success && token) {
+        try { localStorage.setItem('auth_token', token); } catch (e) {}
+        goHome();
+        return;
+      }
+      if (message && message !== '已切换为密码登录') err.textContent = message;
+    };
+
+    if (hasNativeBiometricLogin()) {
+      biometricBtn.style.display = 'inline-flex';
+      biometricHint.style.display = 'block';
+      setTimeout(requestBiometricLogin, 350);
+    }
+
+    biometricBtn.addEventListener('click', requestBiometricLogin);
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       err.textContent = '';

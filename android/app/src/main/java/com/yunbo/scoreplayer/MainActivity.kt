@@ -2,10 +2,14 @@ package com.yunbo.scoreplayer
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
+import android.hardware.biometrics.BiometricPrompt
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -25,6 +29,8 @@ class MainActivity : Activity() {
     private val internalBaseUrl = "http://192.168.1.2:9000"
     private val cloudBaseUrl = "https://score-player.onrender.com"
     private val externalBaseUrl = "https://scoreplayer-myb.top"
+    private val offlineHomeUrl = "file:///android_asset/home.html"
+    private val offlineLoginUrl = "file:///android_asset/login.html"
     private val probeTimeoutMillis = 2_000
     private val imagePickRequestCode = 1001
     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
@@ -41,9 +47,14 @@ class MainActivity : Activity() {
         bridge = AndroidBridge(this)
         webView = WebView(this)
         setContentView(webView)
+        applyStatusBarInset()
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        webView.settings.allowFileAccess = true
+        webView.settings.allowContentAccess = true
+        webView.settings.allowFileAccessFromFileURLs = true
+        webView.settings.allowUniversalAccessFromFileURLs = true
         webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
         webView.webViewClient = WebViewClient()
         webView.webChromeClient = WebChromeClient()
@@ -71,34 +82,48 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun applyStatusBarInset() {
+        val statusBarId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        val statusBarHeight = if (statusBarId > 0) resources.getDimensionPixelSize(statusBarId) else 0
+        val extraTopPadding = (12 * resources.displayMetrics.density).toInt()
+        webView.setPadding(0, statusBarHeight + extraTopPadding, 0, 0)
+        webView.clipToPadding = false
+    }
+
     private fun probeAndLoad(forceReload: Boolean) {
         if (probing) return
         probing = true
 
         mainScope.launch {
             val targetBaseUrl = withContext(Dispatchers.IO) { selectReachableBaseUrl() }
+            val targetUrl = targetBaseUrl ?: offlineEntryUrl()
             bridge.setActiveBaseUrl(
-                baseUrl = targetBaseUrl,
+                baseUrl = targetBaseUrl ?: "",
                 internalReachable = targetBaseUrl == internalBaseUrl,
                 cloudReachable = targetBaseUrl == cloudBaseUrl,
             )
 
-            val shouldLoad = forceReload || currentBaseUrl == null || currentBaseUrl != targetBaseUrl
-            currentBaseUrl = targetBaseUrl
+            val shouldLoad = forceReload || currentBaseUrl == null || currentBaseUrl != targetUrl
+            currentBaseUrl = targetUrl
             probing = false
 
             if (shouldLoad) {
-                webView.loadUrl(targetBaseUrl)
+                webView.loadUrl(targetUrl)
             }
         }
     }
 
-    private fun selectReachableBaseUrl(): String {
+    private fun selectReachableBaseUrl(): String? {
         return when {
             probeUrl(internalBaseUrl) -> internalBaseUrl
             probeUrl(cloudBaseUrl) -> cloudBaseUrl
-            else -> externalBaseUrl
+            probeUrl(externalBaseUrl) -> externalBaseUrl
+            else -> null
         }
+    }
+
+    private fun offlineEntryUrl(): String {
+        return if (bridge.getToken().isNotBlank()) offlineHomeUrl else offlineLoginUrl
     }
 
     private fun probeUrl(baseUrl: String): Boolean {
@@ -167,6 +192,71 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun clearToken() {
             prefs.edit().remove("token").apply()
+        }
+
+        @JavascriptInterface
+        fun isBiometricLoginAvailable(): Boolean {
+            val hasToken = getToken().isNotBlank()
+            if (!hasToken) return false
+            val keyguardManager = activity.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            return keyguardManager?.isDeviceSecure == true
+        }
+
+        @JavascriptInterface
+        fun requestBiometricLogin() {
+            activity.runOnUiThread {
+                val token = getToken()
+                if (token.isBlank()) {
+                    dispatchBiometricResult(false, "未找到已保存的登录状态", "")
+                    return@runOnUiThread
+                }
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+                    dispatchBiometricResult(false, "当前系统版本不支持指纹登录", "")
+                    return@runOnUiThread
+                }
+                val keyguardManager = activity.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+                if (keyguardManager?.isDeviceSecure != true) {
+                    dispatchBiometricResult(false, "请先在系统中设置指纹或锁屏密码", "")
+                    return@runOnUiThread
+                }
+
+                val prompt = BiometricPrompt.Builder(activity)
+                    .setTitle("指纹登录")
+                    .setSubtitle("验证后进入谱子播放器")
+                    .setNegativeButton("使用密码登录", activity.mainExecutor) { _, _ ->
+                        dispatchBiometricResult(false, "已切换为密码登录", "")
+                    }
+                    .build()
+
+                prompt.authenticate(
+                    CancellationSignal(),
+                    activity.mainExecutor,
+                    object : BiometricPrompt.AuthenticationCallback() {
+                        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                            dispatchBiometricResult(true, "指纹验证成功", token)
+                        }
+
+                        override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                            dispatchBiometricResult(false, errString?.toString() ?: "指纹验证失败", "")
+                        }
+
+                        override fun onAuthenticationFailed() {
+                            dispatchBiometricResult(false, "指纹不匹配，请重试", "")
+                        }
+                    },
+                )
+            }
+        }
+
+        private fun dispatchBiometricResult(success: Boolean, message: String, token: String) {
+            val safeMessage = message.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")
+            val safeToken = token.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
+            activity.runOnUiThread {
+                activity.webView.evaluateJavascript(
+                    "window.onBiometricAuthResult && window.onBiometricAuthResult($success, '$safeMessage', '$safeToken')",
+                    null,
+                )
+            }
         }
 
         @JavascriptInterface
