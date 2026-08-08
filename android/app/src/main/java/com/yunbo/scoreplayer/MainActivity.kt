@@ -80,8 +80,16 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         if (::webView.isInitialized) {
-            probeAndLoad(forceReload = bridge.getToken().isNotBlank())
+            probeAndLoad(forceReload = false)
         }
+    }
+
+    override fun onBackPressed() {
+        if (::webView.isInitialized && webView.canGoBack()) {
+            webView.goBack()
+            return
+        }
+        super.onBackPressed()
     }
 
     override fun onDestroy() {
@@ -110,7 +118,7 @@ class MainActivity : Activity() {
 
         mainScope.launch {
             val targetBaseUrl = withContext(Dispatchers.IO) { selectReachableBaseUrl() }
-            val targetUrl = if (targetBaseUrl == null) offlineHttpEntryUrl() else if (bridge.getToken().isNotBlank()) "$targetBaseUrl/login" else targetBaseUrl
+            val targetUrl = targetBaseUrl ?: offlineHttpEntryUrl()
             bridge.setActiveBaseUrl(
                 baseUrl = targetBaseUrl ?: "",
                 internalReachable = targetBaseUrl == internalBaseUrl,
