@@ -187,7 +187,12 @@
       biometricBtn.disabled = false;
       biometricBtn.textContent = '🔒 指纹快速登录';
       if (success && token) {
-        try { localStorage.setItem('auth_token', token); } catch (e) {}
+        try {
+          localStorage.setItem('auth_token', token);
+          if (window.AndroidBridge && typeof window.AndroidBridge.saveToken === 'function') {
+            window.AndroidBridge.saveToken(token);
+          }
+        } catch (e) {}
         try {
           if (window.AndroidBridge && typeof window.AndroidBridge.openHomeAfterBiometric === 'function') {
             window.AndroidBridge.openHomeAfterBiometric();

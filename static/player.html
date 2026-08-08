@@ -147,7 +147,7 @@
        ============================================================ */
     var ScoreDB = (function () {
       var DB_NAME = 'score-player-offline';
-      var DB_VERSION = 1;
+      var DB_VERSION = 2;
       var STORE_META = 'meta';    // keyPath: id  -> {id,name,mode,page_count,has_audio,audio_path,pages[],cover_path,size,downloaded_at}
       var STORE_BLOBS = 'blobs';  // keyPath: path -> {path,scoreId,type,blob}
       var _dbPromise = null;
@@ -202,9 +202,30 @@
         return getMeta(id).then(function (m) { return !!m; }).catch(function () { return false; });
       }
 
+      function blobKeyCandidates(path) {
+        var keys = [];
+        function add(v) { if (v && keys.indexOf(v) < 0) keys.push(v); }
+        add(path);
+        try {
+          var u = new URL(path, location.origin);
+          add(u.pathname + u.search);
+          add(u.href);
+        } catch (e) {}
+        return keys;
+      }
+
       function getBlob(path) {
         return open().then(function (db) {
-          return reqPromise(db.transaction(STORE_BLOBS, 'readonly').objectStore(STORE_BLOBS).get(path));
+          var store = db.transaction(STORE_BLOBS, 'readonly').objectStore(STORE_BLOBS);
+          var keys = blobKeyCandidates(path);
+          var chain = Promise.resolve(null);
+          keys.forEach(function (key) {
+            chain = chain.then(function (found) {
+              if (found) return found;
+              return reqPromise(store.get(key));
+            });
+          });
+          return chain;
         }).then(function (rec) { return rec ? rec.blob : null; });
       }
 

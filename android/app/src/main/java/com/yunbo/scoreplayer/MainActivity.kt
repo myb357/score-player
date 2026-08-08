@@ -119,7 +119,7 @@ class MainActivity : Activity() {
         mainScope.launch {
             val targetBaseUrl = withContext(Dispatchers.IO) { selectReachableBaseUrl() }
             val targetUrl = when {
-                bridge.getToken().isNotBlank() && !bridge.isBiometricUnlocked() -> {
+                bridge.shouldRequireBiometricGate() -> {
                     val base = targetBaseUrl ?: bridge.getLastBaseUrl().ifBlank { cloudBaseUrl }
                     "$base/login"
                 }
@@ -156,7 +156,7 @@ class MainActivity : Activity() {
 
     private fun offlineHttpEntryUrl(): String {
         val lastBaseUrl = bridge.getLastBaseUrl().ifBlank { cloudBaseUrl }
-        return if (bridge.getToken().isNotBlank()) "$lastBaseUrl/login" else lastBaseUrl
+        return if (bridge.shouldRequireBiometricGate()) "$lastBaseUrl/login" else lastBaseUrl
     }
 
     private fun offlineAssetResponse(uri: Uri): WebResourceResponse? {
@@ -246,6 +246,10 @@ class MainActivity : Activity() {
 
         fun isOfflineMode(): Boolean = offlineMode
 
+        fun hasBiometricCredential(): Boolean = prefs.getString("biometric_token", "").orEmpty().isNotBlank()
+
+        fun shouldRequireBiometricGate(): Boolean = hasBiometricCredential() && !biometricUnlocked
+
         fun isBiometricUnlocked(): Boolean = biometricUnlocked
 
         @JavascriptInterface
@@ -259,20 +263,26 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun saveToken(token: String) {
-            prefs.edit().putString("token", token).apply()
+            prefs.edit()
+                .putString("token", token)
+                .putString("biometric_token", token)
+                .apply()
         }
 
         @JavascriptInterface
         fun getToken(): String = prefs.getString("token", "") ?: ""
 
+        private fun getBiometricToken(): String = prefs.getString("biometric_token", "") ?: ""
+
         @JavascriptInterface
         fun clearToken() {
             prefs.edit().remove("token").apply()
+            biometricUnlocked = false
         }
 
         @JavascriptInterface
         fun isBiometricLoginAvailable(): Boolean {
-            val hasToken = getToken().isNotBlank()
+            val hasToken = getBiometricToken().isNotBlank()
             if (!hasToken) return false
             val keyguardManager = activity.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
             return keyguardManager?.isDeviceSecure == true
@@ -281,7 +291,7 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun requestBiometricLogin() {
             activity.runOnUiThread {
-                val token = getToken()
+                val token = getBiometricToken()
                 if (token.isBlank()) {
                     dispatchBiometricResult(false, "未找到已保存的登录状态", "")
                     return@runOnUiThread
@@ -310,6 +320,7 @@ class MainActivity : Activity() {
                     object : BiometricPrompt.AuthenticationCallback() {
                         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
                             biometricUnlocked = true
+                            prefs.edit().putString("token", token).apply()
                             dispatchBiometricResult(true, "指纹验证成功", token)
                         }
 
@@ -339,7 +350,12 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun openHomeAfterBiometric() {
             biometricUnlocked = true
+            val token = getBiometricToken()
+            if (token.isNotBlank()) {
+                prefs.edit().putString("token", token).apply()
+            }
             val target = getLastBaseUrl().ifBlank { activity.cloudBaseUrl }
+            activity.currentBaseUrl = target
             activity.runOnUiThread {
                 activity.webView.loadUrl(target)
             }
