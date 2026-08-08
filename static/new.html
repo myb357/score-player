@@ -381,8 +381,10 @@
     }
 
     async function readFileAsBlob(file) {
-      // 优先通过 AndroidBridge 读取最后选中的图片（完全绕开 WebView File 系统）
-      if (window.AndroidBridge && typeof window.AndroidBridge.readLastPickedImageAsBase64 === 'function') {
+      // 仅图片走 AndroidBridge 原生读取；音频/视频必须使用当前 file。
+      // 否则选择伴奏时可能误读上一次图片 URI，导致 JPEG 被当成 mp4 交给 ffmpeg。
+      const isImageFile = !!(file && file.type && file.type.startsWith('image/'));
+      if (isImageFile && window.AndroidBridge && typeof window.AndroidBridge.readLastPickedImageAsBase64 === 'function') {
         try {
           const dataUrl = window.AndroidBridge.readLastPickedImageAsBase64();
           if (dataUrl && dataUrl.startsWith('data:')) {
