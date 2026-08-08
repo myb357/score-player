@@ -123,7 +123,7 @@ class MainActivity : Activity() {
     }
 
     private fun offlineEntryUrl(): String {
-        return if (bridge.getToken().isNotBlank()) offlineHomeUrl else offlineLoginUrl
+        return offlineLoginUrl
     }
 
     private fun probeUrl(baseUrl: String): Boolean {
