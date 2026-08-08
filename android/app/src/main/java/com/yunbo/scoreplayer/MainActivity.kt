@@ -35,7 +35,10 @@ class MainActivity : Activity() {
     private val offlineLoginUrl = "file:///android_asset/login.html"
     private val probeTimeoutMillis = 2_000
     private val imagePickRequestCode = 1001
+    private val fileChooserRequestCode = 1002
     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
+
+    private var fileChooserCallback: android.webkit.ValueCallback<Array<Uri>>? = null
 
     private lateinit var webView: WebView
     private lateinit var bridge: AndroidBridge
@@ -71,7 +74,15 @@ class MainActivity : Activity() {
                 )
             }
         }
-        webView.webChromeClient = WebChromeClient()
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?,
+            ): Boolean {
+                return this@MainActivity.openWebFileChooser(filePathCallback, fileChooserParams)
+            }
+        }
         webView.addJavascriptInterface(bridge, "AndroidBridge")
 
         probeAndLoad(forceReload = true)
@@ -101,6 +112,30 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == imagePickRequestCode && resultCode == Activity.RESULT_OK) {
             data?.data?.let { bridge.saveLastPickedImageUri(it) }
+        }
+        if (requestCode == fileChooserRequestCode) {
+            val result = if (resultCode == Activity.RESULT_OK) {
+                val uris = mutableListOf<Uri>()
+                data?.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) {
+                        clip.getItemAt(i)?.uri?.let { uri ->
+                            contentResolver.takePersistableUriPermissionIfPossible(uri)
+                            bridge.saveLastPickedImageUri(uri)
+                            uris.add(uri)
+                        }
+                    }
+                }
+                data?.data?.let { uri ->
+                    contentResolver.takePersistableUriPermissionIfPossible(uri)
+                    bridge.saveLastPickedImageUri(uri)
+                    uris.add(uri)
+                }
+                uris.toTypedArray()
+            } else {
+                null
+            }
+            fileChooserCallback?.onReceiveValue(result)
+            fileChooserCallback = null
         }
     }
 
@@ -216,6 +251,37 @@ class MainActivity : Activity() {
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
         startActivityForResult(intent, imagePickRequestCode)
+    }
+
+    private fun openWebFileChooser(
+        callback: android.webkit.ValueCallback<Array<Uri>>?,
+        params: WebChromeClient.FileChooserParams?,
+    ): Boolean {
+        fileChooserCallback?.onReceiveValue(null)
+        fileChooserCallback = callback
+        val intent = try {
+            params?.createIntent() ?: Intent(Intent.ACTION_OPEN_DOCUMENT)
+        } catch (_: Exception) {
+            Intent(Intent.ACTION_OPEN_DOCUMENT)
+        }.apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE)
+            val acceptTypes = params?.acceptTypes?.filter { it.isNotBlank() }?.toTypedArray().orEmpty()
+            if (acceptTypes.isNotEmpty()) putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes)
+            if (type.isNullOrBlank() || type == "*/*") {
+                type = if (acceptTypes.isNotEmpty()) acceptTypes.first() else "*/*"
+            }
+        }
+        return try {
+            startActivityForResult(intent, fileChooserRequestCode)
+            true
+        } catch (_: Exception) {
+            fileChooserCallback = null
+            callback?.onReceiveValue(null)
+            false
+        }
     }
 
     class AndroidBridge(private val activity: MainActivity) {
