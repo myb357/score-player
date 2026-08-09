@@ -43,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.31")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.32")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -340,12 +340,18 @@ def _recommend_offset_from_peaks(peaks: list, bpm: float, search_seconds: float 
     }
 
 
+_LLM_REFINE_HARD_TIMEOUT_SECONDS = float(os.environ.get("QWEN_AUDIO_HARD_TIMEOUT", "35"))
+
+
 def _llm_refine_bpm_selection(src_path: str, candidate_bpms: list, current_pick: float) -> Optional[float]:
     """When librosa confidence is low, ask Qwen-Audio (DashScope) to pick the best BPM
     from the librosa-generated candidates. Returns matched candidate value or None.
 
     Silently no-ops if DASHSCOPE_API_KEY is not configured or the SDK is unavailable,
-    so this stays fully optional and never breaks the librosa pipeline.
+    so this stays fully optional and never breaks the librosa pipeline. Runs the whole
+    DashScope round-trip inside a hard threading-based timeout, because the SDK's own
+    ``timeout=`` argument is silently ignored by some transport paths and previously
+    caused the frontend to hang forever on ``分析中`` when the cross-border call stalled.
     """
     api_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
     if not api_key or not candidate_bpms:
@@ -357,70 +363,79 @@ def _llm_refine_bpm_selection(src_path: str, candidate_bpms: list, current_pick:
         import dashscope  # type: ignore
     except Exception:
         return None
-    tmp_clip = None
-    try:
-        # Extract a middle 30s segment to keep token cost bounded; keep 16kHz mono mp3.
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir=DATA_DIR) as f:
-            tmp_clip = f.name
-        cmd = [ffmpeg, "-y", "-v", "error", "-ss", "20", "-t", "30",
-               "-i", src_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", tmp_clip]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-        if proc.returncode != 0 or not os.path.isfile(tmp_clip) or os.path.getsize(tmp_clip) < 2048:
-            # Fall back to first 30s if middle segment failed (e.g. audio shorter than 20s).
-            cmd2 = [ffmpeg, "-y", "-v", "error", "-t", "30",
-                    "-i", src_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", tmp_clip]
-            proc2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-            if proc2.returncode != 0 or not os.path.isfile(tmp_clip) or os.path.getsize(tmp_clip) < 2048:
-                return None
-        dashscope.api_key = api_key
-        # Default to Qwen3-Omni-Flash (Alibaba Bailian's current recommended lightweight
-        # multimodal model, official pick for cost-sensitive audio+text scenarios).
-        # Override via QWEN_AUDIO_MODEL; `qwen-audio-turbo` remains a stable fallback.
-        model_name = os.environ.get("QWEN_AUDIO_MODEL", "qwen3-omni-flash").strip() or "qwen3-omni-flash"
-        prompt = (
-            "你是资深节奏分析师。这是一段音乐伴奏。已知它的 BPM 大概率是以下候选之一："
-            + "、".join(f"{b} BPM" for b in candidate_bpms)
-            + f"。librosa 目前倾向 {current_pick} BPM。"
-            "请仔细听整段音频的鼓点/低频脉冲，判断哪个候选最贴合。"
-            "只输出一个 JSON 对象，不要有其它文字："
-            '{"best_bpm": <数字>, "reason": "<30字以内理由>"}'
-        )
-        response = dashscope.MultiModalConversation.call(
-            model=model_name,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"audio": f"file://{os.path.abspath(tmp_clip)}"},
-                    {"text": prompt},
-                ],
-            }],
-            timeout=30,
-        )
-        if getattr(response, "status_code", None) not in (200, "200"):
-            return None
-        content = response.output.choices[0].message.content
-        if isinstance(content, list) and content:
-            text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
-        else:
-            text = str(content)
-        import re as _re
-        m = _re.search(r'"best_bpm"\s*:\s*([\d.]+)', text)
-        if not m:
-            return None
-        picked = float(m.group(1))
-        best = min(candidate_bpms, key=lambda b: abs(b - picked))
-        # Only accept if the model's answer is close enough to a known candidate.
-        if abs(best - picked) > 3.0:
-            return None
-        return float(best)
-    except Exception:
+
+    import threading
+
+    result_holder: dict = {"value": None}
+
+    def _work():
+        tmp_clip = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir=DATA_DIR) as f:
+                tmp_clip = f.name
+            # Middle 30s clip keeps token cost bounded; 16kHz mono mp3.
+            cmd = [ffmpeg, "-y", "-v", "error", "-ss", "20", "-t", "30",
+                   "-i", src_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", tmp_clip]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            if proc.returncode != 0 or not os.path.isfile(tmp_clip) or os.path.getsize(tmp_clip) < 2048:
+                cmd2 = [ffmpeg, "-y", "-v", "error", "-t", "30",
+                        "-i", src_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", tmp_clip]
+                proc2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                if proc2.returncode != 0 or not os.path.isfile(tmp_clip) or os.path.getsize(tmp_clip) < 2048:
+                    return
+            dashscope.api_key = api_key
+            model_name = os.environ.get("QWEN_AUDIO_MODEL", "qwen3-omni-flash").strip() or "qwen3-omni-flash"
+            prompt = (
+                "你是资深节奏分析师。这是一段音乐伴奏。已知它的 BPM 大概率是以下候选之一："
+                + "、".join(f"{b} BPM" for b in candidate_bpms)
+                + f"。librosa 目前倾向 {current_pick} BPM。"
+                "请仔细听整段音频的鼓点/低频脉冲，判断哪个候选最贴合。"
+                "只输出一个 JSON 对象，不要有其它文字："
+                '{"best_bpm": <数字>, "reason": "<30字以内理由>"}'
+            )
+            response = dashscope.MultiModalConversation.call(
+                model=model_name,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"audio": f"file://{os.path.abspath(tmp_clip)}"},
+                        {"text": prompt},
+                    ],
+                }],
+                timeout=25,
+            )
+            if getattr(response, "status_code", None) not in (200, "200"):
+                return
+            content = response.output.choices[0].message.content
+            if isinstance(content, list) and content:
+                text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+            else:
+                text = str(content)
+            import re as _re
+            m = _re.search(r'"best_bpm"\s*:\s*([\d.]+)', text)
+            if not m:
+                return
+            picked = float(m.group(1))
+            best = min(candidate_bpms, key=lambda b: abs(b - picked))
+            if abs(best - picked) > 3.0:
+                return
+            result_holder["value"] = float(best)
+        except Exception as exc:  # pragma: no cover - best effort logging
+            print(f"[llm-refine] failed: {exc!r}", flush=True)
+        finally:
+            if tmp_clip and os.path.isfile(tmp_clip):
+                try:
+                    os.remove(tmp_clip)
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=_work, name="qwen-refine", daemon=True)
+    t.start()
+    t.join(timeout=_LLM_REFINE_HARD_TIMEOUT_SECONDS)
+    if t.is_alive():
+        print(f"[llm-refine] hard timeout after {_LLM_REFINE_HARD_TIMEOUT_SECONDS}s; skipping AI refine", flush=True)
         return None
-    finally:
-        if tmp_clip and os.path.isfile(tmp_clip):
-            try:
-                os.remove(tmp_clip)
-            except Exception:
-                pass
+    return result_holder["value"]
 
 
 def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advanced: bool = False) -> dict:
@@ -428,13 +443,41 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
     if not ffmpeg:
         raise RuntimeError("服务器未安装 ffmpeg，无法分析伴奏")
     cleanup_stale_runtime_files()
+    # Cap the librosa analysis window so a long song does not blow past Render free
+    # tier's 512MB memory limit (HPSS + multiple envelopes can peak at several
+    # hundred MB on a 5min+ track and previously caused the worker to be OOM-killed,
+    # leaving the frontend stuck on "分析中"). Override via SCORE_METRONOME_MAX_SECONDS.
+    max_seconds_default = "150" if advanced else "0"
+    try:
+        max_seconds = float(os.environ.get("SCORE_METRONOME_MAX_SECONDS", max_seconds_default))
+    except (TypeError, ValueError):
+        max_seconds = 0.0
+    hpss_enabled = os.environ.get("SCORE_METRONOME_HPSS", "0").strip().lower() in ("1", "true", "yes", "on")
+    _t_start = time.time()
+    print(
+        f"[metronome] start advanced={advanced} bpm={bpm} max_seconds={max_seconds} hpss={hpss_enabled}",
+        flush=True,
+    )
     with tempfile.TemporaryDirectory(prefix="metronome_", dir=DATA_DIR) as analysis_dir:
         wav_path = os.path.join(analysis_dir, "analysis.wav")
-        cmd = [ffmpeg, "-y", "-v", "error", "-i", src_path, "-vn", "-ac", "1", "-ar", "22050", wav_path]
+        cmd = [ffmpeg, "-y", "-v", "error"]
+        if max_seconds > 0:
+            # Try to skip the intro so silent leading bars do not dominate the beat grid.
+            # `-ss` before `-i` uses ffmpeg's fast seek and is essentially free even for
+            # very long inputs.
+            cmd += ["-ss", "10", "-t", str(int(max_seconds))]
+        cmd += ["-i", src_path, "-vn", "-ac", "1", "-ar", "22050", wav_path]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        if proc.returncode != 0 or not os.path.isfile(wav_path):
-            tail = proc.stderr.decode("utf-8", "ignore")[-500:]
-            raise RuntimeError(f"伴奏分析失败: {tail}")
+        if proc.returncode != 0 or not os.path.isfile(wav_path) or os.path.getsize(wav_path) < 1024:
+            # Retry without the seek in case the audio is shorter than the skip offset.
+            cmd2 = [ffmpeg, "-y", "-v", "error"]
+            if max_seconds > 0:
+                cmd2 += ["-t", str(int(max_seconds))]
+            cmd2 += ["-i", src_path, "-vn", "-ac", "1", "-ar", "22050", wav_path]
+            proc2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+            if proc2.returncode != 0 or not os.path.isfile(wav_path):
+                tail = proc2.stderr.decode("utf-8", "ignore")[-500:]
+                raise RuntimeError(f"伴奏分析失败: {tail}")
         try:
             import librosa
         except Exception as e:
@@ -444,13 +487,19 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
             raise RuntimeError("伴奏过短，无法分析节拍")
         onset_env = librosa.onset.onset_strength(y=y, sr=sr)
         analysis_envs = [("full", onset_env)]
-        if advanced:
+        if advanced and hpss_enabled:
+            # HPSS is memory-hungry (STFT-heavy); disabled by default on 512MB Render
+            # workers. Set SCORE_METRONOME_HPSS=1 to re-enable when running on a bigger
+            # host (e.g. the softrouter box with plenty of RAM).
             try:
                 harmonic, percussive = librosa.effects.hpss(y)
                 percussive_env = librosa.onset.onset_strength(y=percussive, sr=sr)
                 analysis_envs.append(("percussive", percussive_env))
-            except Exception:
-                percussive_env = onset_env
+                # Free the harmonic buffer aggressively.
+                del harmonic, percussive
+            except Exception as exc:
+                print(f"[metronome] hpss failed: {exc!r}", flush=True)
+        if advanced:
             try:
                 cqt_env = librosa.onset.onset_strength(y=y, sr=sr, aggregate="median")
                 analysis_envs.append(("median", cqt_env))
@@ -554,6 +603,14 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
                                 offset_result = res_c
                                 llm_refined = True
                                 break
+        elapsed_ms = int((time.time() - _t_start) * 1000)
+        print(
+            f"[metronome] done advanced={advanced} bpm={round(target_bpm, 1)} "
+            f"offset={offset_result['offset']} confidence={offset_result['confidence']:.3f} "
+            f"llm_refined={bool(locals().get('llm_refined', False))} "
+            f"elapsed_ms={elapsed_ms}",
+            flush=True,
+        )
         return {
             "offset": offset_result["offset"],
             "confidence": offset_result["confidence"],
@@ -569,6 +626,8 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
             "llm_refined": bool(locals().get("llm_refined", False)),
             "llm_pick_bpm": locals().get("llm_pick_bpm"),
             "analysis": "librosa-v2-advanced" if advanced else "librosa-v2-full-song",
+            "analysis_window_seconds": (max_seconds if max_seconds > 0 else None),
+            "elapsed_ms": elapsed_ms,
         }
 
 

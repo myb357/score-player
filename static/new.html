@@ -384,6 +384,24 @@
       btn.disabled = true;
       btn.textContent = '分析中…';
       hint.textContent = '正在准备伴奏…';
+      // Hard timeout so the button never hangs on "分析中" if the backend worker
+      // is OOM-killed, the cross-border DashScope call stalls, or the Cloudflare
+      // Tunnel drops the response mid-stream. Configurable via URL query for
+      // debugging (e.g. ?recommendTimeout=180000).
+      const timeoutMs = (() => {
+        try {
+          const q = new URLSearchParams(location.search).get('recommendTimeout');
+          const n = Number(q);
+          if (isFinite(n) && n >= 30000 && n <= 600000) return n;
+        } catch (_) {}
+        return 150000;
+      })();
+      const controller = new AbortController();
+      const startedAt = Date.now();
+      let progressTimer = null;
+      const timeoutTimer = setTimeout(() => {
+        try { controller.abort(); } catch (_) {}
+      }, timeoutMs);
       try {
         let recommendBlob = mediaFile;
         let recommendName = mediaFile && mediaFile.name ? mediaFile.name : 'audio';
@@ -400,11 +418,19 @@
         const bpmInput = document.getElementById('metroBpm');
         const manualBpm = bpmInput.value && bpmInput.value.trim();
         hint.textContent = manualBpm ? '正在用高级节拍分析匹配当前 BPM 的最佳偏移，请稍候…' : '正在用高级节拍分析推荐 BPM 并匹配最佳偏移，请稍候…';
+        // Elapsed-time hint keeps the user aware while the backend does HPSS +
+        // DashScope round-trip; also confirms the request is still alive.
+        progressTimer = setInterval(() => {
+          const s = Math.round((Date.now() - startedAt) / 1000);
+          if (s >= 15) {
+            hint.textContent = '仍在分析伴奏，已用时 ' + s + 's（AI 二次校准跨境调用较慢，请再等等）…';
+          }
+        }, 3000);
         const fd = new FormData();
         fd.append('bpm', manualBpm || '');
         fd.append('advanced', '1');
         fd.append('audio', recommendBlob, recommendName);
-        const res = await apiFetch('/api/metronome/recommend-offset', { method: 'POST', body: fd });
+        const res = await apiFetch('/api/metronome/recommend-offset', { method: 'POST', body: fd, signal: controller.signal });
         if (res.status === 401) { goLogin(); return; }
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.detail || '推荐失败');
@@ -423,9 +449,15 @@
         hint.textContent = llmInfo + (data.manual_bpm ? '已按当前 BPM ' + data.used_bpm + ' 推荐偏移 ' : '已推荐 BPM ' + (data.recommended_bpm || data.bpm) + '，偏移 ') + data.offset + 's（置信度 ' + Math.round((data.confidence || 0) * 100) + '%' + beatInfo + '）' + candidateInfo + '。若谱面标注了 BPM（如 ♩=120），可直接填入后再点推荐，只算偏移。';
         toast(data.manual_bpm ? '已按当前 BPM 填入推荐偏移' : '已填入推荐 BPM 和偏移', 'ok');
       } catch (e) {
-        hint.textContent = e.message || '推荐失败，请手动微调';
-        toast(hint.textContent, 'err');
+        const aborted = e && (e.name === 'AbortError' || /aborted/i.test(String(e.message || '')));
+        const msg = aborted
+          ? '分析超时（已用时 ' + Math.round((Date.now() - startedAt) / 1000) + 's），可能是伴奏过长或服务器繁忙。请手动填 BPM 后再点一次“AI 推荐 BPM / 偏移”只算偏移，或稍后重试。'
+          : (e.message || '推荐失败，请手动微调');
+        hint.textContent = msg;
+        toast(msg, 'err');
       } finally {
+        clearTimeout(timeoutTimer);
+        if (progressTimer) clearInterval(progressTimer);
         btn.disabled = false;
         btn.textContent = 'AI 推荐 BPM / 偏移';
       }
