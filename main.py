@@ -43,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.18")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.19")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -366,6 +366,9 @@ def init_db() -> None:
             cur.execute(
                 "ALTER TABLE scores ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE;"
             )
+            cur.execute("ALTER TABLE scores ADD COLUMN IF NOT EXISTS metronome_bpm DOUBLE PRECISION NOT NULL DEFAULT 120;")
+            cur.execute("ALTER TABLE scores ADD COLUMN IF NOT EXISTS metronome_offset DOUBLE PRECISION NOT NULL DEFAULT 0;")
+            cur.execute("ALTER TABLE scores ADD COLUMN IF NOT EXISTS metronome_volume DOUBLE PRECISION NOT NULL DEFAULT 0.6;")
             # drop stale sessions that predate the users table (user_id NULL)
             cur.execute("DELETE FROM sessions WHERE user_id IS NULL;")
             # --- seed the initial super administrator ---
@@ -885,6 +888,9 @@ def process_score_job(
     audio_src_ext: Optional[str],
     t_start: Optional[float],
     t_end: Optional[float],
+    metronome_bpm: float,
+    metronome_offset: float,
+    metronome_volume: float,
 ) -> None:
     """Run the heavy score-creation work in the background (threadpool).
 
@@ -934,8 +940,8 @@ def process_score_job(
         with db_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO scores (name, mode, audio_filename, owner_id, created_at) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                    (name, mode, audio_filename, owner_id, now),
+                    "INSERT INTO scores (name, mode, audio_filename, owner_id, created_at, metronome_bpm, metronome_offset, metronome_volume) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (name, mode, audio_filename, owner_id, now, metronome_bpm, metronome_offset, metronome_volume),
                 )
                 score_id = cur.fetchone()[0]
                 total = max(len(page_rows), 1)
@@ -1042,7 +1048,7 @@ def _media_url(score_id: int, filename: Optional[str]) -> Optional[str]:
 async def export_score(request: Request, score_id: int):
     me = current_user(request)
     row = db_query(
-        "SELECT id, name, mode, audio_filename, owner_id, created_at FROM scores WHERE id = %s",
+        "SELECT id, name, mode, audio_filename, owner_id, created_at, metronome_bpm, metronome_offset, metronome_volume FROM scores WHERE id = %s",
         (score_id,),
         one=True,
     )
@@ -1559,6 +1565,9 @@ async def api_create_score_async(
     turn_seconds: List[str] = Form(default=[]),
     trim_start: Optional[str] = Form(default=None),
     trim_end: Optional[str] = Form(default=None),
+    metronome_bpm: str = Form("120"),
+    metronome_offset: str = Form("0"),
+    metronome_volume: str = Form("0.6"),
     images: List[UploadFile] = File(...),
     audio: Optional[UploadFile] = File(default=None),
 ):
@@ -1588,6 +1597,15 @@ async def api_create_score_async(
     t_end = _parse_float(trim_end)
     if t_start is not None and t_end is not None and t_end <= t_start:
         t_start, t_end = None, None
+    bpm = _parse_float(metronome_bpm) or 120.0
+    bpm = min(300.0, max(30.0, bpm))
+    try:
+        metro_offset = float(metronome_offset or 0)
+    except (TypeError, ValueError):
+        metro_offset = 0.0
+    metro_offset = min(600.0, max(-600.0, metro_offset))
+    metro_volume = _parse_float(metronome_volume)
+    metro_volume = 0.6 if metro_volume is None else min(1.0, max(0.0, metro_volume))
 
     # Read ALL uploaded bytes now: UploadFile objects are closed once this
     # request returns, but the background task runs afterwards.
@@ -1627,6 +1645,9 @@ async def api_create_score_async(
         audio_src_ext,
         t_start,
         t_end,
+        bpm,
+        metro_offset,
+        metro_volume,
     )
     return {"job_id": job_id, "status": "pending"}
 
@@ -1670,7 +1691,7 @@ async def get_score(request: Request, score_id: int):
     if cached is not None:
         return cached
     row = db_query(
-        "SELECT id, name, mode, audio_filename, owner_id, created_at FROM scores WHERE id = %s",
+        "SELECT id, name, mode, audio_filename, owner_id, created_at, metronome_bpm, metronome_offset, metronome_volume FROM scores WHERE id = %s",
         (score_id,),
         one=True,
     )
@@ -1688,6 +1709,9 @@ async def get_score(request: Request, score_id: int):
         "mode": row["mode"],
         "created_at": row["created_at"],
         "created_at_text": _fmt_time(row["created_at"]),
+        "metronome_bpm": row.get("metronome_bpm", 120),
+        "metronome_offset": row.get("metronome_offset", 0),
+        "metronome_volume": row.get("metronome_volume", 0.6),
         "can_edit": me["role"] == "superadmin" or row["owner_id"] == me["id"],
         "audio_filename": row["audio_filename"],
         "audio_url": _media_url(score_id, row["audio_filename"]),
@@ -1734,6 +1758,9 @@ async def update_score(
     mode: str = Form(...),
     pages_meta: str = Form(...),
     audio_action: str = Form("keep"),  # keep | replace | remove
+    metronome_bpm: str = Form("120"),
+    metronome_offset: str = Form("0"),
+    metronome_volume: str = Form("0.6"),
     trim_start: Optional[str] = Form(default=None),
     trim_end: Optional[str] = Form(default=None),
     images: List[UploadFile] = File(default=[]),  # new files, in order of 'new' entries
@@ -1755,6 +1782,22 @@ async def update_score(
         return JSONResponse(status_code=400, content={"detail": "谱子名称不能为空"})
     if mode not in ("audio", "countdown"):
         return JSONResponse(status_code=400, content={"detail": "翻页模式无效"})
+    def _pf(v):
+        try:
+            f = float(v)
+            return f if f >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    bpm = _pf(metronome_bpm) or 120.0
+    bpm = min(300.0, max(30.0, bpm))
+    try:
+        metro_offset = float(metronome_offset or 0)
+    except (TypeError, ValueError):
+        metro_offset = 0.0
+    metro_offset = min(600.0, max(-600.0, metro_offset))
+    metro_volume = _pf(metronome_volume)
+    metro_volume = 0.6 if metro_volume is None else min(1.0, max(0.0, metro_volume))
     try:
         meta = json.loads(pages_meta)
         assert isinstance(meta, list) and meta
@@ -1867,8 +1910,8 @@ async def update_score(
                         (score_id, idx, fn, ts),
                     )
                 cur.execute(
-                    "UPDATE scores SET name = %s, mode = %s, audio_filename = %s WHERE id = %s",
-                    (name, mode, audio_filename, score_id),
+                    "UPDATE scores SET name=%s, mode=%s, audio_filename=%s, metronome_bpm=%s, metronome_offset=%s, metronome_volume=%s WHERE id=%s",
+                    (name, mode, audio_filename, bpm, metro_offset, metro_volume, score_id),
                 )
     except Exception as e:
         for k in new_uploaded_keys:  # rollback freshly-uploaded images

@@ -162,6 +162,24 @@
       </div>
     </div>
 
+    <!-- 节拍器 -->
+    <div class="panel" style="padding:20px;">
+      <div class="section-title">节拍器</div>
+      <div class="hint" style="margin-bottom:12px;">默认四分之一音符为一拍。可用偏移时间对齐伴奏，负数表示节拍器提前响。</div>
+      <div class="grid two">
+        <label class="field-label">速度 BPM
+          <input type="number" id="metroBpm" min="30" max="300" step="1" value="120" />
+        </label>
+        <label class="field-label">时间轴偏移（秒）
+          <input type="number" id="metroOffset" min="-600" max="600" step="0.01" value="0" />
+        </label>
+      </div>
+      <label class="field-label" style="margin-top:12px;">节拍器音量
+        <input type="range" id="metroVolume" min="0" max="1" step="0.01" value="0.6" />
+        <span class="hint" id="metroVolumeLabel">60%</span>
+      </label>
+    </div>
+
     <!-- 图片上传 -->
     <div class="panel" style="padding:20px;">
       <div class="section-title">谱页图片（可多张，拖动排序）</div>
@@ -340,6 +358,12 @@
       });
       updateTurnLabels();
     }
+
+    const metroVolume = document.getElementById('metroVolume');
+    const metroVolumeLabel = document.getElementById('metroVolumeLabel');
+    function updateMetroVolumeLabel() { metroVolumeLabel.textContent = Math.round(Number(metroVolume.value || 0) * 100) + '%'; }
+    metroVolume.addEventListener('input', updateMetroVolumeLabel);
+    updateMetroVolumeLabel();
 
     // ---------- images / pages ----------
     // page model: { id, turn, kind:'existing'|'new', file?, url, filename?, name }
@@ -737,6 +761,10 @@
         const data = await res.json();
         document.getElementById('scoreName').value = data.name || '';
         setMode(data.mode || 'audio');
+        document.getElementById('metroBpm').value = data.metronome_bpm || 120;
+        document.getElementById('metroOffset').value = data.metronome_offset || 0;
+        metroVolume.value = data.metronome_volume == null ? 0.6 : data.metronome_volume;
+        updateMetroVolumeLabel();
         pages = (data.pages || []).map(p => ({
           id: ++uid, turn: (p.turn_seconds == null ? '' : p.turn_seconds),
           kind: 'existing', filename: p.filename, url: mediaUrl(p.image_url), name: p.filename,
@@ -776,6 +804,9 @@
         const fd = new FormData();
         fd.append('name', name);
         fd.append('mode', currentMode);
+        fd.append('metronome_bpm', document.getElementById('metroBpm').value || '120');
+        fd.append('metronome_offset', document.getElementById('metroOffset').value || '0');
+        fd.append('metronome_volume', metroVolume.value || '0.6');
         for (const p of pages) {
           const blob = await readFileAsBlob(p.file);
           fd.append('images', blob, p.file.name);
@@ -841,6 +872,9 @@
       const fd = new FormData();
       fd.append('name', name);
       fd.append('mode', currentMode);
+      fd.append('metronome_bpm', document.getElementById('metroBpm').value || '120');
+      fd.append('metronome_offset', document.getElementById('metroOffset').value || '0');
+      fd.append('metronome_volume', metroVolume.value || '0.6');
       fd.append('pages_meta', JSON.stringify(meta));
       // append NEW files only, in the order their 'new' entries appear
       for (const p of pages.filter(p => p.kind === 'new')) {

@@ -353,6 +353,12 @@
       <div class="side-bar left" id="leftBar">
         <a class="round-btn" href="/" id="backBtn" title="返回">‹</a>
         <div class="bar-title" id="title">加载中</div>
+        <div class="volume-boost-v" id="volumeBoostGroup">
+          <button class="round-btn sm" id="boostUp" title="增大播放音量">＋</button>
+          <span class="boost-val" id="boostVal">1.0x</span>
+          <span class="lbl">音量</span>
+          <button class="round-btn sm" id="boostDown" title="降低播放音量">−</button>
+        </div>
         <div class="bar-spacer"></div>
         <button class="round-btn" id="prevBtn" title="上一页">⏮</button>
         <div class="page-ind-v" id="pageInd">1/1</div>
@@ -388,11 +394,12 @@
           <button class="round-btn sm" id="playModeBtn" title="播放模式：单曲循环" aria-label="切换播放模式">🔂</button>
           <span class="lbl" id="playModeLabel">单曲</span>
         </div>
-        <div class="volume-boost-v" id="volumeBoostGroup">
-          <button class="round-btn sm" id="boostUp" title="增大播放音量">＋</button>
-          <span class="boost-val" id="boostVal">1.0x</span>
-          <span class="lbl">音量</span>
-          <button class="round-btn sm" id="boostDown" title="降低播放音量">−</button>
+        <div class="metro-v" id="metroGroup">
+          <button class="round-btn sm" id="metroToggle" title="开启/关闭节拍器">🥁</button>
+          <button class="round-btn sm" id="metroVolUp" title="增大节拍器音量">＋</button>
+          <span class="metro-val" id="metroVolVal">60%</span>
+          <span class="lbl">节拍器</span>
+          <button class="round-btn sm" id="metroVolDown" title="降低节拍器音量">−</button>
         </div>
         <div class="vprogress-wrap" id="progressWrap">
           <span class="vtime" id="durTime">0:00</span>
@@ -442,6 +449,7 @@
       random:{icon:'🔀',label:'随机',title:'播放模式：随机播放'}
     };
     let audioCtx=null, gainNode=null, mediaSourceNode=null, boost=1.0;
+    let metronomeOn=false, metroTimer=null, metroNextTime=0, metroVolume=0.6;
     const audio=$('audio'), stage=$('stage'), img=$('pageImg');
     const pageLoading=$('pageLoading'), miniProgress=$('miniProgress'), miniProgressFill=$('miniProgressFill');
     const hasAudio=()=>!!(score&&score.audio_url);
@@ -497,17 +505,18 @@
       // Keep the original /api/media path for IndexedDB (offline download) lookup.
       (data.pages||[]).forEach(p=>{ if(p&&p.image_url){ if(!p.image_path)p.image_path=p.image_url; p.image_url=mediaUrl(p.image_url); } });
       if(data.audio_url){ if(!data.audio_path)data.audio_path=data.audio_url; data.audio_url=mediaUrl(data.audio_url); }
-      score=data; pages=score.pages||[]; mode=score.mode; $('title').textContent=score.name;
+      score=data; pages=score.pages||[]; mode=score.mode; metroVolume=score.metronome_volume==null?0.6:Number(score.metronome_volume); $('title').textContent=score.name;
       flipAway=pages.map(p=>p.turn_seconds||0);
       await Promise.all(pages.map(async p=>{p.cached_image_url=await cachedAssetUrl(p.image_url, p.image_path);}));
       if(hasAudio()){
         audio.src=await cachedAssetUrl(score.audio_url, score.audio_path);
+        applyPitchSafeRate();
         audio.onloadedmetadata=()=>{$('durTime').textContent=fmt(audio.duration);};
         audio.ontimeupdate=onTimeUpdate;
         audio.onended=handleAudioEnded;
       }else{ $('progressWrap').style.display='none'; $('abGroup').style.display='none'; $('speedGroup').style.display='none'; $('playModeGroup').style.display='none'; $('volumeBoostGroup').style.display='none'; }
       if(mode==='countdown') $('cdPill').style.display='block';
-      loadViewMode(); loadPlaybackPrefs(); setPage(0); if(!controlsBound){bindControls(); controlsBound=true;} updatePlayBtn();
+      loadViewMode(); loadPlaybackPrefs(); updateMetroUI(); setPage(0); if(!controlsBound){bindControls(); controlsBound=true;} updatePlayBtn();
     }
     const viewModeKey=()=>`score-player:view-mode:${scoreId}`;
     const playbackModeKey='score-player:playback-mode';
@@ -783,6 +792,43 @@
       ensureAudioBoost();
       updateBoostUI();
     }
+    function metronomeInterval(){ return 60 / Math.min(300,Math.max(30,Number(score&&score.metronome_bpm)||120)); }
+    function metronomeOffset(){ return Math.min(600,Math.max(-600,Number(score&&score.metronome_offset)||0)); }
+    function setMetroVolume(v){ metroVolume=Math.min(1,Math.max(0,Math.round(v*100)/100)); if(score)score.metronome_volume=metroVolume; updateMetroUI(); }
+    function updateMetroUI(){
+      $('metroToggle').classList.toggle('active',metronomeOn);
+      $('metroVolVal').textContent=Math.round(metroVolume*100)+'%';
+    }
+    function clickMetro(accent){
+      if(!audioCtx||metroVolume<=0)return;
+      const osc=audioCtx.createOscillator();
+      const gain=audioCtx.createGain();
+      osc.frequency.value=accent?1320:880;
+      gain.gain.setValueAtTime(0,audioCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(metroVolume*0.35,audioCtx.currentTime+0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.08);
+      osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime+0.09);
+    }
+    function stopMetronome(){ clearInterval(metroTimer); metroTimer=null; }
+    function scheduleMetronome(){
+      stopMetronome();
+      if(!metronomeOn||!playing)return;
+      ensureAudioBoost();
+      const interval=metronomeInterval();
+      const now=hasAudio()?audio.currentTime:0;
+      const offset=metronomeOffset();
+      const n=Math.max(0,Math.ceil((now-offset)/interval));
+      metroNextTime=offset+n*interval;
+      metroTimer=setInterval(()=>{
+        if(!metronomeOn||!playing){stopMetronome();return;}
+        const t=hasAudio()?audio.currentTime:((Date.now()-cdStartTs)/1000);
+        while(t+0.03>=metroNextTime){
+          clickMetro(Math.round((metroNextTime-offset)/interval)%4===0);
+          metroNextTime+=interval;
+        }
+      },25);
+    }
+    function toggleMetronome(){ metronomeOn=!metronomeOn; updateMetroUI(); if(metronomeOn) scheduleMetronome(); else stopMetronome(); }
 
     // ---------- countdown ----------
     function resetCountdown(){ clearTimeout(cdTimer); cdTimer=null; const d=flipAway[current]>0?flipAway[current]:0; cdRemaining=d*1000; updateCdPill(); if(playing)startCountdown(); }
@@ -795,14 +841,23 @@
       $('cdPill').textContent='⏱ '+Math.max(0,rem/1000).toFixed(1)+'s'; }
 
     // ---------- play / pause ----------
-    function play(){ playing=true; ensureAudioBoost(); if(hasAudio())audio.play().catch(()=>{}); if(mode==='countdown')startCountdown(); updatePlayBtn(); scheduleHide(); }
-    function pause(){ playing=false; if(hasAudio())audio.pause(); if(mode==='countdown')pauseCountdown(); updatePlayBtn(); showBars(); clearTimeout(hideTimer); }
+    function play(){ playing=true; ensureAudioBoost(); if(hasAudio())audio.play().catch(()=>{}); if(mode==='countdown')startCountdown(); scheduleMetronome(); updatePlayBtn(); scheduleHide(); }
+    function pause(){ playing=false; if(hasAudio())audio.pause(); if(mode==='countdown')pauseCountdown(); stopMetronome(); updatePlayBtn(); showBars(); clearTimeout(hideTimer); }
     function togglePlay(){ playing?pause():play(); }
     function updatePlayBtn(){ $('playBtn').textContent=playing?'⏸':'▶'; }
 
     // ---------- speed ----------
     let speed=1.0;
-    function setSpeed(v){ speed=Math.min(2.0,Math.max(0.1,Math.round(v*10)/10)); $('speedVal').textContent=speed.toFixed(1)+'x'; if(hasAudio())audio.playbackRate=speed; }
+    function applyPitchSafeRate(){
+      if(!hasAudio())return;
+      // Android WebView / Chromium 的默认变速保调算法容易让音乐产生金属感和糊音。
+      // 关闭 preservesPitch 后走更干净的原生重采样，优先保证音质清晰度。
+      audio.preservesPitch=false;
+      audio.mozPreservesPitch=false;
+      audio.webkitPreservesPitch=false;
+      audio.playbackRate=speed;
+    }
+    function setSpeed(v){ speed=Math.min(2.0,Math.max(0.1,Math.round(v*10)/10)); $('speedVal').textContent=speed.toFixed(1)+'x'; applyPitchSafeRate(); }
 
     // ---------- A-B loop (vertical) ----------
     function refreshAB(){ const dur=audio.duration||1;
@@ -839,6 +894,9 @@
       $('playModeBtn').addEventListener('click',togglePlaybackMode);
       $('boostUp').addEventListener('click',()=>setBoost(boost+0.1));
       $('boostDown').addEventListener('click',()=>setBoost(boost-0.1));
+      $('metroToggle').addEventListener('click',toggleMetronome);
+      $('metroVolUp').addEventListener('click',()=>setMetroVolume(metroVolume+0.05));
+      $('metroVolDown').addEventListener('click',()=>setMetroVolume(metroVolume-0.05));
       const bar=$('progressBar');
       function seekAt(cy){ const r=bar.getBoundingClientRect(); const ratio=Math.min(1,Math.max(0,(r.bottom-cy)/r.height)); if(hasAudio()&&audio.duration)audio.currentTime=ratio*audio.duration; }
       let dg=false;
