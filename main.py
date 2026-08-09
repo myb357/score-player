@@ -43,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.30")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.31")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -373,9 +373,10 @@ def _llm_refine_bpm_selection(src_path: str, candidate_bpms: list, current_pick:
             if proc2.returncode != 0 or not os.path.isfile(tmp_clip) or os.path.getsize(tmp_clip) < 2048:
                 return None
         dashscope.api_key = api_key
-        # Default to Qwen3-Omni-Captioner (dedicated audio understanding, 2026-07 release);
-        # override via QWEN_AUDIO_MODEL if needed. `qwen-audio-turbo` remains a stable fallback.
-        model_name = os.environ.get("QWEN_AUDIO_MODEL", "qwen3-omni-30b-a3b-captioner").strip() or "qwen3-omni-30b-a3b-captioner"
+        # Default to Qwen3-Omni-Flash (Alibaba Bailian's current recommended lightweight
+        # multimodal model, official pick for cost-sensitive audio+text scenarios).
+        # Override via QWEN_AUDIO_MODEL; `qwen-audio-turbo` remains a stable fallback.
+        model_name = os.environ.get("QWEN_AUDIO_MODEL", "qwen3-omni-flash").strip() or "qwen3-omni-flash"
         prompt = (
             "你是资深节奏分析师。这是一段音乐伴奏。已知它的 BPM 大概率是以下候选之一："
             + "、".join(f"{b} BPM" for b in candidate_bpms)
