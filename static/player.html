@@ -384,6 +384,16 @@
       <!-- RIGHT: playback -->
       <div class="side-bar right" id="rightBar">
         <button class="play-btn" id="playBtn" title="播放/暂停">▶</button>
+        <div class="play-mode-v" id="playModeGroup">
+          <button class="round-btn sm" id="playModeBtn" title="播放模式：单曲循环" aria-label="切换播放模式">🔂</button>
+          <span class="lbl" id="playModeLabel">单曲</span>
+        </div>
+        <div class="volume-boost-v" id="volumeBoostGroup">
+          <button class="round-btn sm" id="boostUp" title="增大播放音量">＋</button>
+          <span class="boost-val" id="boostVal">1.0x</span>
+          <span class="lbl">音量</span>
+          <button class="round-btn sm" id="boostDown" title="降低播放音量">−</button>
+        </div>
         <div class="vprogress-wrap" id="progressWrap">
           <span class="vtime" id="durTime">0:00</span>
           <div class="vprogress" id="progressBar">
@@ -424,6 +434,14 @@
     let cdRemaining=0, cdTimer=null, cdStartTs=0, cdPillTimer=null;
     let loopA=null, loopB=null;
     let viewMode='contain';
+    let playbackMode='single';
+    const playbackModes=['single','sequence','random'];
+    const playbackModeMeta={
+      single:{icon:'🔂',label:'单曲',title:'播放模式：单曲循环'},
+      sequence:{icon:'🔁',label:'顺序',title:'播放模式：顺序播放'},
+      random:{icon:'🔀',label:'随机',title:'播放模式：随机播放'}
+    };
+    let audioCtx=null, gainNode=null, mediaSourceNode=null, boost=1.0;
     const audio=$('audio'), stage=$('stage'), img=$('pageImg');
     const pageLoading=$('pageLoading'), miniProgress=$('miniProgress'), miniProgressFill=$('miniProgressFill');
     const hasAudio=()=>!!(score&&score.audio_url);
@@ -486,12 +504,15 @@
         audio.src=await cachedAssetUrl(score.audio_url, score.audio_path);
         audio.onloadedmetadata=()=>{$('durTime').textContent=fmt(audio.duration);};
         audio.ontimeupdate=onTimeUpdate;
-        audio.onended=()=>{playing=false;updatePlayBtn();showBars();};
-      }else{ $('progressWrap').style.display='none'; $('abGroup').style.display='none'; $('speedGroup').style.display='none'; }
+        audio.onended=handleAudioEnded;
+      }else{ $('progressWrap').style.display='none'; $('abGroup').style.display='none'; $('speedGroup').style.display='none'; $('playModeGroup').style.display='none'; $('volumeBoostGroup').style.display='none'; }
       if(mode==='countdown') $('cdPill').style.display='block';
-      loadViewMode(); setPage(0); if(!controlsBound){bindControls(); controlsBound=true;} updatePlayBtn();
+      loadViewMode(); loadPlaybackPrefs(); setPage(0); if(!controlsBound){bindControls(); controlsBound=true;} updatePlayBtn();
     }
     const viewModeKey=()=>`score-player:view-mode:${scoreId}`;
+    const playbackModeKey='score-player:playback-mode';
+    const boostKey='score-player:volume-boost';
+    const listCacheKey='score-player:score-list-cache';
     function loadViewMode(){
       const saved=localStorage.getItem(viewModeKey());
       viewMode=saved==='scroll'?'scroll':'contain';
@@ -679,6 +700,90 @@
       }
     }
 
+    // ---------- playback mode & volume boost ----------
+    function loadPlaybackPrefs(){
+      const savedMode=localStorage.getItem(playbackModeKey);
+      playbackMode=playbackModes.includes(savedMode)?savedMode:'single';
+      const savedBoost=parseFloat(localStorage.getItem(boostKey)||'1');
+      boost=isFinite(savedBoost)?Math.min(3.0,Math.max(1.0,Math.round(savedBoost*10)/10)):1.0;
+      updatePlaybackModeUI();
+      updateBoostUI();
+    }
+    function updatePlaybackModeUI(){
+      const meta=playbackModeMeta[playbackMode]||playbackModeMeta.single;
+      $('playModeBtn').textContent=meta.icon;
+      $('playModeBtn').title=meta.title;
+      $('playModeBtn').setAttribute('aria-label',meta.title);
+      $('playModeLabel').textContent=meta.label;
+    }
+    function togglePlaybackMode(){
+      const idx=playbackModes.indexOf(playbackMode);
+      playbackMode=playbackModes[(idx+1)%playbackModes.length];
+      localStorage.setItem(playbackModeKey,playbackMode);
+      updatePlaybackModeUI();
+      toast((playbackModeMeta[playbackMode]||playbackModeMeta.single).title.replace('播放模式：','已切换为'),'ok');
+    }
+    function playlist(){
+      try{
+        const cached=JSON.parse(localStorage.getItem(listCacheKey)||'null');
+        if(cached&&Array.isArray(cached.scores))return cached.scores.map(s=>Number(s.id)).filter(Boolean);
+      }catch(e){}
+      return [Number(scoreId)];
+    }
+    function goNextScore(){
+      const ids=playlist();
+      const currentId=Number(scoreId);
+      if(ids.length<=1)return false;
+      let nextId=null;
+      if(playbackMode==='random'){
+        const pool=ids.filter(id=>id!==currentId);
+        nextId=pool[Math.floor(Math.random()*pool.length)];
+      }else{
+        const idx=ids.indexOf(currentId);
+        nextId=ids[(idx>=0?idx+1:1)%ids.length];
+      }
+      if(nextId&&nextId!==currentId){goPlayer(nextId);return true;}
+      return false;
+    }
+    function handleAudioEnded(){
+      if(playbackMode==='sequence'||playbackMode==='random'){
+        if(goNextScore())return;
+      }
+      audio.currentTime=0;
+      setPage(0,false);
+      play();
+    }
+    function ensureAudioBoost(){
+      if(!hasAudio())return;
+      try{
+        const AC=window.AudioContext||window.webkitAudioContext;
+        if(!AC)return;
+        if(!audioCtx)audioCtx=new AC();
+        if(!gainNode){
+          gainNode=audioCtx.createGain();
+          gainNode.connect(audioCtx.destination);
+        }
+        if(!mediaSourceNode){
+          mediaSourceNode=audioCtx.createMediaElementSource(audio);
+          mediaSourceNode.connect(gainNode);
+        }
+        gainNode.gain.value=boost;
+        if(audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});
+      }catch(e){
+        audio.volume=Math.min(1,boost);
+      }
+    }
+    function updateBoostUI(){
+      $('boostVal').textContent=boost.toFixed(1)+'x';
+      if(gainNode)gainNode.gain.value=boost;
+    }
+    function setBoost(v){
+      boost=Math.min(3.0,Math.max(1.0,Math.round(v*10)/10));
+      localStorage.setItem(boostKey,String(boost));
+      ensureAudioBoost();
+      updateBoostUI();
+    }
+
     // ---------- countdown ----------
     function resetCountdown(){ clearTimeout(cdTimer); cdTimer=null; const d=flipAway[current]>0?flipAway[current]:0; cdRemaining=d*1000; updateCdPill(); if(playing)startCountdown(); }
     function startCountdown(){ clearTimeout(cdTimer); if(current>=pages.length-1||cdRemaining<=0){updateCdPill();return;} cdStartTs=Date.now(); cdTimer=setTimeout(()=>nextPage(false),cdRemaining); tickPill(); }
@@ -690,7 +795,7 @@
       $('cdPill').textContent='⏱ '+Math.max(0,rem/1000).toFixed(1)+'s'; }
 
     // ---------- play / pause ----------
-    function play(){ playing=true; if(hasAudio())audio.play().catch(()=>{}); if(mode==='countdown')startCountdown(); updatePlayBtn(); scheduleHide(); }
+    function play(){ playing=true; ensureAudioBoost(); if(hasAudio())audio.play().catch(()=>{}); if(mode==='countdown')startCountdown(); updatePlayBtn(); scheduleHide(); }
     function pause(){ playing=false; if(hasAudio())audio.pause(); if(mode==='countdown')pauseCountdown(); updatePlayBtn(); showBars(); clearTimeout(hideTimer); }
     function togglePlay(){ playing?pause():play(); }
     function updatePlayBtn(){ $('playBtn').textContent=playing?'⏸':'▶'; }
@@ -731,6 +836,9 @@
       $('zoomReset').addEventListener('click',resetView);
       $('speedUp').addEventListener('click',()=>setSpeed(speed+0.1));
       $('speedDown').addEventListener('click',()=>setSpeed(speed-0.1));
+      $('playModeBtn').addEventListener('click',togglePlaybackMode);
+      $('boostUp').addEventListener('click',()=>setBoost(boost+0.1));
+      $('boostDown').addEventListener('click',()=>setBoost(boost-0.1));
       const bar=$('progressBar');
       function seekAt(cy){ const r=bar.getBoundingClientRect(); const ratio=Math.min(1,Math.max(0,(r.bottom-cy)/r.height)); if(hasAudio()&&audio.duration)audio.currentTime=ratio*audio.duration; }
       let dg=false;
