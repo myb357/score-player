@@ -89,6 +89,15 @@ services:
       MEDIA_PROXY: "1"
       COOKIE_SECURE: "0"
       PORT: "8000"
+      # ---- 可选：Qwen-Audio (DashScope) BPM 二次校准 ----
+      # 与 Render 同源开启：advanced 节拍分析在 librosa 置信度低时会调用一次
+      # DashScope 大模型选出最贴合的 BPM。软路由本地内存和跨境网络都比 Render
+      # 免费套餐宽裕，因此这里默认打开；.env 未提供 key 时自动 no-op，兼容旧部署。
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      QWEN_AUDIO_MODEL: ${QWEN_AUDIO_MODEL:-qwen3-omni-flash}
+      # 软路由内存充裕，advanced 模式允许打开 HPSS 与全曲分析（Render 上默认关掉）
+      SCORE_METRONOME_HPSS: "1"
+      SCORE_METRONOME_MAX_SECONDS: "0"
     ports:
       - "${APP_PUBLISH:-9000}:8000"
     networks: [spnet]

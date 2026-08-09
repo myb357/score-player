@@ -102,6 +102,9 @@ fi
 GITHUB_TOKEN_EMBEDDED="ghp_""zG1ux4EfaREpkiwVLQ7FJwifZXCASW2xKmvq"
 ACR_USERNAME_EMBEDDED='草书''狂澜357'
 ACR_PASSWORD_EMBEDDED='Myb!''3579510073'
+# Qwen-Audio (DashScope) key for optional BPM refinement. Same key used on Render.
+# Empty means the AI refinement path is silently skipped; existing librosa flow unchanged.
+DASHSCOPE_API_KEY_EMBEDDED='sk-ws-H.ERYHYYR.kEou.MEQCIE8u7-WxGyJgcmK-tQroAcp1VhZgvVGaYdY-eeFPoaSnAiAZl3Ywlzr9NC2e_TdWJOWwkhhrPKiBoPAeN6Pkwl59_g'
 cat > /root/score-player/deploy/softrouter/.env <<ENV_EOF
 # 数据库
 POSTGRES_USER=scoreuser
@@ -148,6 +151,11 @@ MEDIA_PROXY=1
 # 应用域名
 APP_URL=https://scoreplayer-myb.top
 MEDIA_BASE_URL=https://media.scoreplayer-myb.top
+
+# Qwen-Audio (DashScope) BPM 二次校准
+# 未提供 key 时 sp-app 会自动跳过 AI 校准，librosa 主流程不受影响
+DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY_EMBEDDED}
+QWEN_AUDIO_MODEL=qwen3-omni-flash
 ENV_EOF
 success ".env 文件写出完成：/root/score-player/deploy/softrouter/.env"
 

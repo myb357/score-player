@@ -111,9 +111,13 @@ B2_ENDPOINT=http://192.168.1.2:9002
 S3_PUBLIC_ENDPOINT=https://media.scoreplayer-myb.top
 MEDIA_PROXY=1
 COOKIE_SECURE=0
+DASHSCOPE_API_KEY=sk-ws-...        # 可选，未填则 sp-app 跳过 AI 校准
+QWEN_AUDIO_MODEL=qwen3-omni-flash
 ```
 
 `MEDIA_PROXY=1` 是软路由本地 MinIO 部署下的正确取值。本地 MinIO 生成的预签名 URL 指向内网 `minio:9000`，平板和浏览器无法直连该内网地址，因此由 score-player 通过 `/api/media` 回源转发媒体字节流（支持 HTTP Range），而不是让客户端直连对象存储。当前代理按 1MiB 分块从对象存储转发，并返回 `Cache-Control: public, max-age=604800, immutable`，用于降低 Cloudflare Tunnel 下的小块传输开销，并让重复打开同一谱页/伴奏时更容易命中浏览器或 Cloudflare 缓存。`MEDIA_PROXY=0` 仅用于 Render / Backblaze B2 等公网对象存储模式：此时 app 会 302 跳转到公网可达的预签名 URL，并使用 `S3_PUBLIC_ENDPOINT` 作为 S3 client endpoint，使签名中的 host 与外网访问域名一致。`COOKIE_SECURE=0` 与当前软路由本地链路兼容，避免本地或代理路径下 Cookie 写入异常。
+
+`DASHSCOPE_API_KEY` 与 `QWEN_AUDIO_MODEL` 是"高级 AI 推荐 BPM/偏移"功能所需的可选凭据，与 Render 使用同一把 key。`migrate.sh` 已经在生成 `.env` 时把 key 与默认模型 `qwen3-omni-flash` 一并写入，`docker-compose.yml` 会把两个变量透传到 `sp-app` 容器；未提供 key 时 sp-app 会静默跳过 AI 校准，librosa 主流程不受影响。软路由内存和跨境网络都比 Render 免费套餐宽裕，因此 compose 还额外设置 `SCORE_METRONOME_HPSS=1` 与 `SCORE_METRONOME_MAX_SECONDS=0`，让 advanced 模式跑全曲 + HPSS 分离，得到更精确的节拍分析。
 
 ## 镜像与 CI/CD
 
