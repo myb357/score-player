@@ -171,7 +171,7 @@
           <input type="number" id="metroBpm" min="30" max="300" step="1" value="120" />
         </label>
         <label class="field-label">时间轴偏移（秒）
-          <input type="number" id="metroOffset" min="-600" max="600" step="0.1" value="0" />
+          <input type="number" id="metroOffset" min="-600" max="600" step="0.01" value="0" />
         </label>
       </div>
       <label class="field-label" style="margin-top:12px;">节拍器音量
@@ -179,7 +179,7 @@
         <span class="hint" id="metroVolumeLabel">60%</span>
       </label>
       <button class="btn btn-ghost" id="recommendOffsetBtn" type="button" style="margin-top:12px;">AI 推荐 BPM / 偏移</button>
-      <div class="hint" id="recommendOffsetHint" style="margin-top:8px;">上传伴奏后，可用 librosa 分析节拍，自动推荐 BPM 和 0.1s 粒度偏移。</div>
+      <div class="hint" id="recommendOffsetHint" style="margin-top:8px;">上传伴奏后，可用 librosa 按整首歌匹配节拍器；填写 BPM 时仅推荐 0.01s 粒度偏移，清空 BPM 时同时推荐 BPM。</div>
     </div>
 
     <!-- 图片上传 -->
@@ -372,7 +372,7 @@
     function normalizeMetroOffsetInput() {
       const el = document.getElementById('metroOffset');
       const v = Number(el.value || 0);
-      el.value = (Math.round(Math.min(600, Math.max(-600, isFinite(v) ? v : 0)) * 10) / 10).toFixed(1).replace(/\.0$/, '');
+      el.value = (Math.round(Math.min(600, Math.max(-600, isFinite(v) ? v : 0)) * 100) / 100).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
     }
     document.getElementById('metroOffset').addEventListener('change', normalizeMetroOffsetInput);
     async function recommendOffset() {
@@ -395,18 +395,21 @@
           }
         }
         if (!recommendBlob) throw new Error('请先选择伴奏文件，再推荐偏移');
-        hint.textContent = '正在用 librosa 分析伴奏节拍并匹配偏移，请稍候…';
+        const bpmInput = document.getElementById('metroBpm');
+        const manualBpm = bpmInput.value && bpmInput.value.trim();
+        hint.textContent = manualBpm ? '正在用整首歌匹配当前 BPM 的最佳偏移，请稍候…' : '正在用整首歌推荐 BPM 并匹配最佳偏移，请稍候…';
         const fd = new FormData();
-        fd.append('bpm', '');
+        fd.append('bpm', manualBpm || '');
         fd.append('audio', recommendBlob, recommendName);
         const res = await apiFetch('/api/metronome/recommend-offset', { method: 'POST', body: fd });
         if (res.status === 401) { goLogin(); return; }
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.detail || '推荐失败');
-        document.getElementById('metroBpm').value = data.recommended_bpm || data.bpm || 120;
+        if (!data.manual_bpm) bpmInput.value = data.recommended_bpm || data.bpm || 120;
         document.getElementById('metroOffset').value = data.offset;
-        hint.textContent = '已推荐 BPM ' + (data.recommended_bpm || data.bpm) + '，偏移 ' + data.offset + 's（置信度 ' + Math.round((data.confidence || 0) * 100) + '%），可点击“试听选段+节拍器”继续微调。';
-        toast('已填入推荐 BPM 和偏移', 'ok');
+        const beatInfo = data.analyzed_beats ? '，全曲匹配 ' + (data.matched_beats || 0) + '/' + data.analyzed_beats + ' 个节拍点' : '';
+        hint.textContent = (data.manual_bpm ? '已按当前 BPM ' + data.used_bpm + ' 推荐偏移 ' : '已推荐 BPM ' + (data.recommended_bpm || data.bpm) + '，偏移 ') + data.offset + 's（置信度 ' + Math.round((data.confidence || 0) * 100) + '%' + beatInfo + '），可点击“试听选段+节拍器”继续微调。';
+        toast(data.manual_bpm ? '已按当前 BPM 填入推荐偏移' : '已填入推荐 BPM 和偏移', 'ok');
       } catch (e) {
         hint.textContent = e.message || '推荐失败，请手动微调';
         toast(hint.textContent, 'err');
@@ -794,7 +797,7 @@
       if(metroPreviewCtx.state==='suspended')metroPreviewCtx.resume().catch(()=>{});
       const bpm=Math.min(300,Math.max(30,Number(document.getElementById('metroBpm').value)||120));
       const interval=60/bpm;
-      const offset=Math.round((Number(document.getElementById('metroOffset').value)||0)*10)/10;
+      const offset=Math.round((Number(document.getElementById('metroOffset').value)||0)*100)/100;
       const n=Math.max(0,Math.ceil((startAt-offset)/interval));
       metroPreviewNext=offset+n*interval;
       metroPreviewTimer=setInterval(()=>{
