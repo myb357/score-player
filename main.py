@@ -12,7 +12,6 @@ import tempfile
 import time
 import uuid
 import zipfile
-import struct
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -44,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.20")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.21")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -264,48 +263,61 @@ def process_media_to_mp3(
         raise RuntimeError(f"ffmpeg 处理失败: {tail}")
 
 
-def recommend_metronome_offset(src_path: str, bpm: float) -> dict:
-    ffmpeg = get_ffmpeg()
-    if not ffmpeg:
-        raise RuntimeError("服务器未安装 ffmpeg，无法分析伴奏")
-    bpm = min(300.0, max(30.0, bpm or 120.0))
-    sample_rate = 100
-    cmd = [ffmpeg, "-v", "error", "-i", src_path, "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", "-"]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-    if proc.returncode != 0 or not proc.stdout:
-        tail = proc.stderr.decode("utf-8", "ignore")[-500:]
-        raise RuntimeError(f"伴奏分析失败: {tail}")
-    count = len(proc.stdout) // 2
-    if count < sample_rate:
-        raise RuntimeError("伴奏过短，无法分析节拍偏移")
-    samples = struct.unpack("<" + "h" * count, proc.stdout[: count * 2])
-    env = [abs(x) / 32768.0 for x in samples]
-    smooth = []
-    window = 5
-    for i in range(len(env)):
-        smooth.append(sum(env[max(0, i - window): i + 1]) / min(i + 1, window + 1))
-    novelty = [max(0.0, smooth[i] - smooth[i - 1]) for i in range(1, len(smooth))]
-    if not novelty:
-        raise RuntimeError("伴奏鼓点不明显，无法推荐偏移")
-    ranked = sorted(range(len(novelty)), key=lambda i: novelty[i], reverse=True)[:80]
-    peaks = [(i + 1) / sample_rate for i in ranked if (i + 1) / sample_rate <= 60]
-    if len(peaks) < 3:
-        raise RuntimeError("伴奏鼓点不明显，无法推荐偏移")
+def _recommend_offset_from_peaks(peaks: list, bpm: float, search_seconds: float = 2.0) -> dict:
     interval = 60.0 / bpm
     best_offset, best_score = 0.0, -1.0
-    for step in range(-20, 21):
+    for step in range(int(-search_seconds * 10), int(search_seconds * 10) + 1):
         offset = step / 10.0
         score = 0.0
         for peak in peaks:
-            n = round((peak - offset) / interval)
-            beat = offset + n * interval
+            beat = offset + round((peak - offset) / interval) * interval
             dist = abs(peak - beat)
             if dist <= 0.12:
                 score += 1.0 - dist / 0.12
         if score > best_score:
             best_offset, best_score = offset, score
     confidence = min(1.0, best_score / max(5.0, len(peaks) * 0.22))
-    return {"offset": round(best_offset, 1), "confidence": round(confidence, 2), "bpm": bpm}
+    return {"offset": round(best_offset, 1), "confidence": round(confidence, 2)}
+
+
+def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None) -> dict:
+    ffmpeg = get_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("服务器未安装 ffmpeg，无法分析伴奏")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+        wav_path = tmp_wav.name
+    try:
+        cmd = [ffmpeg, "-y", "-v", "error", "-i", src_path, "-vn", "-ac", "1", "-ar", "22050", wav_path]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        if proc.returncode != 0 or not os.path.isfile(wav_path):
+            tail = proc.stderr.decode("utf-8", "ignore")[-500:]
+            raise RuntimeError(f"伴奏分析失败: {tail}")
+        try:
+            import librosa
+        except Exception as e:
+            raise RuntimeError(f"服务器缺少 librosa 节拍分析依赖: {e}")
+        y, sr = librosa.load(wav_path, sr=22050, mono=True, duration=120)
+        if y.size < sr:
+            raise RuntimeError("伴奏过短，无法分析节拍")
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, onset_envelope=onset_env, trim=False)
+        if hasattr(tempo, "__len__"):
+            tempo = float(tempo[0])
+        recommended_bpm = round(min(300.0, max(30.0, float(tempo or 120.0))), 1)
+        target_bpm = min(300.0, max(30.0, float(bpm or recommended_bpm)))
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
+        onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, units="frames", backtrack=False)
+        onset_times = librosa.frames_to_time(onset_frames, sr=sr).tolist()
+        peaks = [t for t in (beat_times[:80] or onset_times[:80]) if t <= 60]
+        if len(peaks) < 3:
+            raise RuntimeError("伴奏鼓点不明显，无法推荐 BPM 或偏移")
+        offset_result = _recommend_offset_from_peaks(peaks, target_bpm)
+        return {"offset": offset_result["offset"], "confidence": offset_result["confidence"], "bpm": round(target_bpm, 1), "recommended_bpm": recommended_bpm, "used_bpm": round(target_bpm, 1), "analysis": "librosa-v2"}
+    finally:
+        try:
+            os.remove(wav_path)
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------------
@@ -1609,9 +1621,9 @@ async def api_recommend_metronome_offset(
 ):
     current_user(request)
     try:
-        bpm_val = float(bpm or 120)
+        bpm_val = float(bpm) if bpm and str(bpm).strip() else None
     except (TypeError, ValueError):
-        bpm_val = 120.0
+        bpm_val = None
     suffix = os.path.splitext(audio.filename or "audio.bin")[1] or ".bin"
     raw = await audio.read()
     if not raw:
