@@ -893,7 +893,16 @@ def serve_static_file(filename: str) -> Response:
     if not os.path.isfile(full):
         return Response(status_code=404, content="Not Found")
     ctype, _ = mimetypes.guess_type(full)
-    return FileResponse(full, media_type=ctype or "application/octet-stream")
+    headers = {}
+    # HTML/JS/CSS carry app logic (e.g. the AbortController timeout for AI
+    # recommend BPM). Without any Cache-Control, browsers may hold onto stale
+    # copies across deploys and users end up running old JS that never times
+    # out. Fingerprinted assets under /static/vendor/ keep long-lived caching
+    # via the immutable pattern; everything else revalidates on every load.
+    lower = filename.lower()
+    if lower.endswith((".html", ".js", ".css")) and not lower.startswith("vendor/"):
+        headers["Cache-Control"] = "no-cache, must-revalidate"
+    return FileResponse(full, media_type=ctype or "application/octet-stream", headers=headers)
 
 
 def serve_page(filename: str) -> HTMLResponse:
@@ -901,7 +910,10 @@ def serve_page(filename: str) -> HTMLResponse:
     if not os.path.isfile(full):
         return HTMLResponse(status_code=404, content="Not Found")
     with open(full, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+        return HTMLResponse(
+            content=f.read(),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
 
 # ----------------------------------------------------------------------------
