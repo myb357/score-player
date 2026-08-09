@@ -43,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.28")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.29")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -340,6 +340,85 @@ def _recommend_offset_from_peaks(peaks: list, bpm: float, search_seconds: float 
     }
 
 
+def _llm_refine_bpm_selection(src_path: str, candidate_bpms: list, current_pick: float) -> Optional[float]:
+    """When librosa confidence is low, ask Qwen-Audio (DashScope) to pick the best BPM
+    from the librosa-generated candidates. Returns matched candidate value or None.
+
+    Silently no-ops if DASHSCOPE_API_KEY is not configured or the SDK is unavailable,
+    so this stays fully optional and never breaks the librosa pipeline.
+    """
+    api_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    if not api_key or not candidate_bpms:
+        return None
+    ffmpeg = get_ffmpeg()
+    if not ffmpeg:
+        return None
+    try:
+        import dashscope  # type: ignore
+    except Exception:
+        return None
+    tmp_clip = None
+    try:
+        # Extract a middle 30s segment to keep token cost bounded; keep 16kHz mono mp3.
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir=DATA_DIR) as f:
+            tmp_clip = f.name
+        cmd = [ffmpeg, "-y", "-v", "error", "-ss", "20", "-t", "30",
+               "-i", src_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", tmp_clip]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if proc.returncode != 0 or not os.path.isfile(tmp_clip) or os.path.getsize(tmp_clip) < 2048:
+            # Fall back to first 30s if middle segment failed (e.g. audio shorter than 20s).
+            cmd2 = [ffmpeg, "-y", "-v", "error", "-t", "30",
+                    "-i", src_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", tmp_clip]
+            proc2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            if proc2.returncode != 0 or not os.path.isfile(tmp_clip) or os.path.getsize(tmp_clip) < 2048:
+                return None
+        dashscope.api_key = api_key
+        prompt = (
+            "你是资深节奏分析师。这是一段音乐伴奏。已知它的 BPM 大概率是以下候选之一："
+            + "、".join(f"{b} BPM" for b in candidate_bpms)
+            + f"。librosa 目前倾向 {current_pick} BPM。"
+            "请仔细听整段音频的鼓点/低频脉冲，判断哪个候选最贴合。"
+            "只输出一个 JSON 对象，不要有其它文字："
+            '{"best_bpm": <数字>, "reason": "<30字以内理由>"}'
+        )
+        response = dashscope.MultiModalConversation.call(
+            model="qwen-audio-turbo-latest",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"audio": f"file://{os.path.abspath(tmp_clip)}"},
+                    {"text": prompt},
+                ],
+            }],
+            timeout=30,
+        )
+        if getattr(response, "status_code", None) not in (200, "200"):
+            return None
+        content = response.output.choices[0].message.content
+        if isinstance(content, list) and content:
+            text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+        else:
+            text = str(content)
+        import re as _re
+        m = _re.search(r'"best_bpm"\s*:\s*([\d.]+)', text)
+        if not m:
+            return None
+        picked = float(m.group(1))
+        best = min(candidate_bpms, key=lambda b: abs(b - picked))
+        # Only accept if the model's answer is close enough to a known candidate.
+        if abs(best - picked) > 3.0:
+            return None
+        return float(best)
+    except Exception:
+        return None
+    finally:
+        if tmp_clip and os.path.isfile(tmp_clip):
+            try:
+                os.remove(tmp_clip)
+            except Exception:
+                pass
+
+
 def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advanced: bool = False) -> dict:
     ffmpeg = get_ffmpeg()
     if not ffmpeg:
@@ -454,6 +533,23 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
                 }
                 for score_metric, _, bonus, bpm, res in candidate_results[:5]
             ]
+            # When librosa is not confident enough, ask Qwen-Audio to pick the best BPM
+            # from the librosa candidate list. This is optional and fully falls back.
+            llm_refined = False
+            llm_pick_bpm = None
+            if advanced and offset_result["confidence"] < 0.65 and len(top_candidates) >= 2:
+                candidate_bpm_list = [c["bpm"] for c in top_candidates[:4]]
+                llm_choice = _llm_refine_bpm_selection(src_path, candidate_bpm_list, float(target_bpm))
+                if llm_choice is not None:
+                    llm_pick_bpm = round(llm_choice, 1)
+                    if abs(llm_choice - target_bpm) > 0.05:
+                        # Swap to the LLM's chosen candidate; reuse its offset from candidate_results.
+                        for _sm, _s, _b, bpm_c, res_c in candidate_results:
+                            if abs(bpm_c - llm_choice) < 0.05:
+                                target_bpm = bpm_c
+                                offset_result = res_c
+                                llm_refined = True
+                                break
         return {
             "offset": offset_result["offset"],
             "confidence": offset_result["confidence"],
@@ -466,6 +562,8 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
             "support_target": offset_result.get("support_target"),
             "mean_error": offset_result.get("mean_error"),
             "candidates": top_candidates,
+            "llm_refined": bool(locals().get("llm_refined", False)),
+            "llm_pick_bpm": locals().get("llm_pick_bpm"),
             "analysis": "librosa-v2-advanced" if advanced else "librosa-v2-full-song",
         }
 

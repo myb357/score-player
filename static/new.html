@@ -419,7 +419,8 @@
             .map(c => 'BPM ' + c.bpm + '/偏移 ' + c.offset + 's（置信度 ' + Math.round((c.confidence || 0) * 100) + '%）');
           if (alt.length) candidateInfo = '；备选：' + alt.join('，');
         }
-        hint.textContent = (data.manual_bpm ? '已按当前 BPM ' + data.used_bpm + ' 推荐偏移 ' : '已推荐 BPM ' + (data.recommended_bpm || data.bpm) + '，偏移 ') + data.offset + 's（置信度 ' + Math.round((data.confidence || 0) * 100) + '%' + beatInfo + '）' + candidateInfo + '。若谱面标注了 BPM（如 ♩=120），可直接填入后再点推荐，只算偏移。';
+        const llmInfo = data.llm_refined ? '🎵 已由音频大模型二次校准 → ' : (data.llm_pick_bpm ? '🎵 音频大模型确认此 BPM → ' : '');
+        hint.textContent = llmInfo + (data.manual_bpm ? '已按当前 BPM ' + data.used_bpm + ' 推荐偏移 ' : '已推荐 BPM ' + (data.recommended_bpm || data.bpm) + '，偏移 ') + data.offset + 's（置信度 ' + Math.round((data.confidence || 0) * 100) + '%' + beatInfo + '）' + candidateInfo + '。若谱面标注了 BPM（如 ♩=120），可直接填入后再点推荐，只算偏移。';
         toast(data.manual_bpm ? '已按当前 BPM 填入推荐偏移' : '已填入推荐 BPM 和偏移', 'ok');
       } catch (e) {
         hint.textContent = e.message || '推荐失败，请手动微调';
