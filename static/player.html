@@ -850,14 +850,14 @@
     let speed=1.0;
     function applyPitchSafeRate(){
       if(!hasAudio())return;
-      // Android WebView / Chromium 的默认变速保调算法容易让音乐产生金属感和糊音。
-      // 关闭 preservesPitch 后走更干净的原生重采样，优先保证音质清晰度。
-      audio.preservesPitch=false;
-      audio.mozPreservesPitch=false;
-      audio.webkitPreservesPitch=false;
+      // 倍速播放必须保持原音高。显式开启 preservesPitch，避免不同浏览器/WebView 默认值不一致。
+      // 同时优先使用较温和的播放速率范围，减少原生保调算法在极端倍速下的失真。
+      audio.preservesPitch=true;
+      audio.mozPreservesPitch=true;
+      audio.webkitPreservesPitch=true;
       audio.playbackRate=speed;
     }
-    function setSpeed(v){ speed=Math.min(2.0,Math.max(0.1,Math.round(v*10)/10)); $('speedVal').textContent=speed.toFixed(1)+'x'; applyPitchSafeRate(); }
+    function setSpeed(v){ speed=Math.min(2.0,Math.max(0.5,Math.round(v*10)/10)); $('speedVal').textContent=speed.toFixed(1)+'x'; applyPitchSafeRate(); }
 
     // ---------- A-B loop (vertical) ----------
     function refreshAB(){ const dur=audio.duration||1;
