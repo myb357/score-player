@@ -78,7 +78,7 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/myb357/score-player/main/de
 8. 执行 `docker-compose up -d`，启动 `db`、`minio`、`score-player`、`sp-webhook`、`cloudflared` 等服务。
 9. 验证容器状态。
 
-脚本目标运行环境为 iStoreOS / OpenWrt 系系统，需具备 `docker`、`docker-compose` 或 `docker compose` 插件、`curl`，以及 `openssl` 或 `python3`。脚本要求 root 权限运行，并默认使用 `/mnt/nas/score-player-data` 作为持久化数据目录。重复执行时会覆盖脚本管理的配置文件，并通过 compose 幂等更新容器。
+脚本目标运行环境为 iStoreOS / OpenWrt 系系统，需具备 `docker`、`docker-compose` 或 `docker compose` 插件、`curl`，以及 `openssl` 或 `python3`。脚本要求 root 权限运行，并默认使用 `/mnt/nas/score-player-data` 作为持久化数据目录。重复执行时会覆盖脚本管理的配置文件，并通过 compose 幂等更新容器。PostgreSQL 必须保持 `docker.m.daocloud.io/postgres:17-alpine` 与 `PGDATA=/var/lib/postgresql/data`，以兼容既有 `/mnt/nas/score-player-data/postgres` 数据目录，避免重建空库。
 
 迁移完成后，可用以下命令检查容器与入口健康状态：
 

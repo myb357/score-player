@@ -19,15 +19,15 @@
 
 services:
   db:
-    image: docker.m.daocloud.io/postgres:16-alpine
+    image: docker.m.daocloud.io/postgres:17-alpine
     container_name: sp-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${PG_USER:-score}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-change-me-pg}
       POSTGRES_DB: ${PG_DB:-scoredb}
-      # 数据目录放到子目录，避免 bind mount 根目录 lost+found 冲突
-      PGDATA: /var/lib/postgresql/data/pgdata
+      # 保持 PGDATA 指向 bind mount 根目录，兼容软路由已初始化的 PostgreSQL 17 数据目录。
+      PGDATA: /var/lib/postgresql/data
     volumes:
       - ${DATA_ROOT:-./data}/postgres:/var/lib/postgresql/data
     ports:
