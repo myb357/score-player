@@ -43,11 +43,12 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.22")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.23")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
 os.makedirs(DATA_DIR, exist_ok=True)
+RUNTIME_TMP_MAX_AGE_SECONDS = int(os.environ.get("SCORE_RUNTIME_TMP_MAX_AGE_SECONDS", str(6 * 3600)))
 
 # --- Database (Supabase PostgreSQL) -----------------------------------------
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -216,6 +217,29 @@ def b2_delete_prefix(prefix: str) -> None:
     b2_delete_keys(b2_list_keys(prefix))
 
 
+def cleanup_stale_runtime_files(max_age_seconds: Optional[int] = None) -> None:
+    """Best-effort cleanup for transient ffmpeg / metronome analysis artifacts."""
+    max_age = max_age_seconds or RUNTIME_TMP_MAX_AGE_SECONDS
+    now = time.time()
+    prefixes = ("tmp", "out_", "metronome_")
+    try:
+        for name in os.listdir(DATA_DIR):
+            if not name.startswith(prefixes):
+                continue
+            path = os.path.join(DATA_DIR, name)
+            try:
+                if now - os.path.getmtime(path) < max_age:
+                    continue
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 # ----------------------------------------------------------------------------
 # ffmpeg helpers (video -> audio extraction & trimming)
 # ----------------------------------------------------------------------------
@@ -284,9 +308,9 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None) -> di
     ffmpeg = get_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("服务器未安装 ffmpeg，无法分析伴奏")
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
-        wav_path = tmp_wav.name
-    try:
+    cleanup_stale_runtime_files()
+    with tempfile.TemporaryDirectory(prefix="metronome_", dir=DATA_DIR) as analysis_dir:
+        wav_path = os.path.join(analysis_dir, "analysis.wav")
         cmd = [ffmpeg, "-y", "-v", "error", "-i", src_path, "-vn", "-ac", "1", "-ar", "22050", wav_path]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         if proc.returncode != 0 or not os.path.isfile(wav_path):
@@ -313,11 +337,6 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None) -> di
             raise RuntimeError("伴奏鼓点不明显，无法推荐 BPM 或偏移")
         offset_result = _recommend_offset_from_peaks(peaks, target_bpm)
         return {"offset": offset_result["offset"], "confidence": offset_result["confidence"], "bpm": round(target_bpm, 1), "recommended_bpm": recommended_bpm, "used_bpm": round(target_bpm, 1), "analysis": "librosa-v2"}
-    finally:
-        try:
-            os.remove(wav_path)
-        except Exception:
-            pass
 
 
 # ----------------------------------------------------------------------------
@@ -1628,7 +1647,7 @@ async def api_recommend_metronome_offset(
     raw = await audio.read()
     if not raw:
         return JSONResponse(status_code=400, content={"detail": "请先选择伴奏文件"})
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="metronome_upload_", dir=DATA_DIR) as tmp:
         tmp.write(raw)
         src = tmp.name
     try:
@@ -1640,6 +1659,7 @@ async def api_recommend_metronome_offset(
             os.remove(src)
         except Exception:
             pass
+        cleanup_stale_runtime_files()
 
 
 @app.post("/api/scores/async")
