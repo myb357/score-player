@@ -178,6 +178,8 @@
         <input type="range" id="metroVolume" min="0" max="1" step="0.01" value="0.6" />
         <span class="hint" id="metroVolumeLabel">60%</span>
       </label>
+      <button class="btn btn-ghost" id="recommendOffsetBtn" type="button" style="margin-top:12px;">AI 推荐偏移</button>
+      <div class="hint" id="recommendOffsetHint" style="margin-top:8px;">上传伴奏并填写 BPM 后，可自动分析鼓点推荐 0.1s 粒度偏移。</div>
     </div>
 
     <!-- 图片上传 -->
@@ -370,6 +372,46 @@
       el.value = (Math.round(Math.min(600, Math.max(-600, isFinite(v) ? v : 0)) * 10) / 10).toFixed(1).replace(/\.0$/, '');
     }
     document.getElementById('metroOffset').addEventListener('change', normalizeMetroOffsetInput);
+    async function recommendOffset() {
+      const btn = document.getElementById('recommendOffsetBtn');
+      const hint = document.getElementById('recommendOffsetHint');
+      normalizeMetroOffsetInput();
+      btn.disabled = true;
+      btn.textContent = '分析中…';
+      hint.textContent = '正在准备伴奏…';
+      try {
+        let recommendBlob = mediaFile;
+        let recommendName = mediaFile && mediaFile.name ? mediaFile.name : 'audio';
+        if (!recommendBlob) {
+          const ea = document.getElementById('existingAudio');
+          if (ea && ea.src) {
+            const audioRes = await fetch(ea.src, { credentials: 'include' });
+            if (!audioRes.ok) throw new Error('读取已有伴奏失败，请选择“替换伴奏”后重新上传分析');
+            recommendBlob = await audioRes.blob();
+            recommendName = 'existing-audio.mp3';
+          }
+        }
+        if (!recommendBlob) throw new Error('请先选择伴奏文件，再推荐偏移');
+        hint.textContent = '正在分析伴奏鼓点并匹配当前 BPM，请稍候…';
+        const fd = new FormData();
+        fd.append('bpm', document.getElementById('metroBpm').value || '120');
+        fd.append('audio', recommendBlob, recommendName);
+        const res = await apiFetch('/api/metronome/recommend-offset', { method: 'POST', body: fd });
+        if (res.status === 401) { goLogin(); return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || '推荐偏移失败');
+        document.getElementById('metroOffset').value = data.offset;
+        hint.textContent = '已推荐偏移 ' + data.offset + 's（置信度 ' + Math.round((data.confidence || 0) * 100) + '%），可点击“试听选段+节拍器”继续微调。';
+        toast('已填入推荐偏移 ' + data.offset + 's', 'ok');
+      } catch (e) {
+        hint.textContent = e.message || '推荐失败，请手动微调';
+        toast(hint.textContent, 'err');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'AI 推荐偏移';
+      }
+    }
+    document.getElementById('recommendOffsetBtn').addEventListener('click', recommendOffset);
 
     // ---------- images / pages ----------
     // page model: { id, turn, kind:'existing'|'new', file?, url, filename?, name }

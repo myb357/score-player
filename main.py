@@ -12,6 +12,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+import struct
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -43,7 +44,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.19")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.20")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -261,6 +262,50 @@ def process_media_to_mp3(
     if proc.returncode != 0 or not os.path.isfile(dest_path):
         tail = proc.stderr.decode("utf-8", "ignore")[-800:]
         raise RuntimeError(f"ffmpeg 处理失败: {tail}")
+
+
+def recommend_metronome_offset(src_path: str, bpm: float) -> dict:
+    ffmpeg = get_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("服务器未安装 ffmpeg，无法分析伴奏")
+    bpm = min(300.0, max(30.0, bpm or 120.0))
+    sample_rate = 100
+    cmd = [ffmpeg, "-v", "error", "-i", src_path, "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", "-"]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    if proc.returncode != 0 or not proc.stdout:
+        tail = proc.stderr.decode("utf-8", "ignore")[-500:]
+        raise RuntimeError(f"伴奏分析失败: {tail}")
+    count = len(proc.stdout) // 2
+    if count < sample_rate:
+        raise RuntimeError("伴奏过短，无法分析节拍偏移")
+    samples = struct.unpack("<" + "h" * count, proc.stdout[: count * 2])
+    env = [abs(x) / 32768.0 for x in samples]
+    smooth = []
+    window = 5
+    for i in range(len(env)):
+        smooth.append(sum(env[max(0, i - window): i + 1]) / min(i + 1, window + 1))
+    novelty = [max(0.0, smooth[i] - smooth[i - 1]) for i in range(1, len(smooth))]
+    if not novelty:
+        raise RuntimeError("伴奏鼓点不明显，无法推荐偏移")
+    ranked = sorted(range(len(novelty)), key=lambda i: novelty[i], reverse=True)[:80]
+    peaks = [(i + 1) / sample_rate for i in ranked if (i + 1) / sample_rate <= 60]
+    if len(peaks) < 3:
+        raise RuntimeError("伴奏鼓点不明显，无法推荐偏移")
+    interval = 60.0 / bpm
+    best_offset, best_score = 0.0, -1.0
+    for step in range(-20, 21):
+        offset = step / 10.0
+        score = 0.0
+        for peak in peaks:
+            n = round((peak - offset) / interval)
+            beat = offset + n * interval
+            dist = abs(peak - beat)
+            if dist <= 0.12:
+                score += 1.0 - dist / 0.12
+        if score > best_score:
+            best_offset, best_score = offset, score
+    confidence = min(1.0, best_score / max(5.0, len(peaks) * 0.22))
+    return {"offset": round(best_offset, 1), "confidence": round(confidence, 2), "bpm": bpm}
 
 
 # ----------------------------------------------------------------------------
@@ -1554,6 +1599,35 @@ async def create_score(
             except Exception:
                 pass
         return JSONResponse(status_code=500, content={"detail": f"保存失败: {e}"})
+
+
+@app.post("/api/metronome/recommend-offset")
+async def api_recommend_metronome_offset(
+    request: Request,
+    bpm: str = Form("120"),
+    audio: UploadFile = File(...),
+):
+    current_user(request)
+    try:
+        bpm_val = float(bpm or 120)
+    except (TypeError, ValueError):
+        bpm_val = 120.0
+    suffix = os.path.splitext(audio.filename or "audio.bin")[1] or ".bin"
+    raw = await audio.read()
+    if not raw:
+        return JSONResponse(status_code=400, content={"detail": "请先选择伴奏文件"})
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(raw)
+        src = tmp.name
+    try:
+        return recommend_metronome_offset(src, bpm_val)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    finally:
+        try:
+            os.remove(src)
+        except Exception:
+            pass
 
 
 @app.post("/api/scores/async")
