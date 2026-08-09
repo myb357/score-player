@@ -216,6 +216,8 @@
             <p>删除伴奏（跟伴奏模式需保留伴奏）。</p>
           </div>
         </div>
+        <button class="btn btn-sm" id="previewExistingSeg" type="button" style="margin-top:12px;">▶ 试听现有伴奏+节拍器</button>
+        <div class="hint" style="margin-top:6px;">编辑谱子时可直接试听现有伴奏和节拍器是否对齐。</div>
       </div>
 
       <!-- 上传区（新建模式，或编辑模式选择替换/无伴奏时） -->
@@ -245,11 +247,12 @@
             <div class="trim-row">
               <div>起始 A：<b id="trimStartLabel" style="color:var(--accent-2)">0:00</b></div>
               <div>结束 B：<b id="trimEndLabel" style="color:var(--accent-2)">0:00</b></div>
-              <button class="btn btn-sm" id="previewSeg" type="button">▶ 试听选段+节拍器</button>
             </div>
           </div>
         </div>
       </div>
+      <button class="btn btn-sm" id="previewSeg" type="button" style="margin-top:12px;">▶ 试听伴奏+节拍器</button>
+      <div class="hint" style="margin-top:6px;">可直接试听节拍器是否对齐；勾选裁剪后会只试听选段。</div>
     </div>
 
     <div class="form-actions">
@@ -783,7 +786,7 @@
       gain.gain.exponentialRampToValueAtTime(0.001,metroPreviewCtx.currentTime+0.08);
       osc.connect(gain); gain.connect(metroPreviewCtx.destination); osc.start(); osc.stop(metroPreviewCtx.currentTime+0.09);
     }
-    function startMetroPreview(startAt){
+    function startMetroPreview(startAt, audioEl){
       stopMetroPreview();
       const AC=window.AudioContext||window.webkitAudioContext;
       if(!AC)return;
@@ -795,21 +798,33 @@
       const n=Math.max(0,Math.ceil((startAt-offset)/interval));
       metroPreviewNext=offset+n*interval;
       metroPreviewTimer=setInterval(()=>{
-        const t=mediaPreview.currentTime;
+        const t=audioEl.currentTime;
         while(t+0.03>=metroPreviewNext){
           metroPreviewClick(Math.round((metroPreviewNext-offset)/interval)%4===0);
           metroPreviewNext+=interval;
         }
       },25);
     }
+    function previewAudioWithMetronome(audioEl, startAt, endAt){
+      if(!audioEl || !audioEl.src){ toast('请先选择或保留伴奏后再试听', 'err'); return; }
+      audioEl.currentTime = startAt || 0;
+      audioEl.play();
+      startMetroPreview(startAt || 0, audioEl);
+      const stop = () => { if (audioEl.currentTime >= endAt || audioEl.paused) { audioEl.pause(); stopMetroPreview(); audioEl.removeEventListener('timeupdate', stop); } };
+      audioEl.addEventListener('timeupdate', stop);
+    }
     document.getElementById('previewSeg').addEventListener('click', () => {
       normalizeMetroOffsetInput();
-      const a = parseFloat(trimStart.value), b = parseFloat(trimEnd.value);
-      mediaPreview.currentTime = a;
-      mediaPreview.play();
-      startMetroPreview(a);
-      const stop = () => { if (mediaPreview.currentTime >= b || mediaPreview.paused) { mediaPreview.pause(); stopMetroPreview(); mediaPreview.removeEventListener('timeupdate', stop); } };
-      mediaPreview.addEventListener('timeupdate', stop);
+      const audioEl = mediaFile ? mediaPreview : document.getElementById('existingAudio');
+      const useTrim = mediaFile && trimEnable.checked;
+      const a = useTrim ? parseFloat(trimStart.value) : 0;
+      const b = useTrim ? parseFloat(trimEnd.value) : (audioEl.duration || mediaDuration || 1e9);
+      previewAudioWithMetronome(audioEl, a, b);
+    });
+    document.getElementById('previewExistingSeg').addEventListener('click', () => {
+      normalizeMetroOffsetInput();
+      const audioEl = document.getElementById('existingAudio');
+      previewAudioWithMetronome(audioEl, 0, audioEl.duration || 1e9);
     });
 
     // ---------- audio action (edit mode) ----------
