@@ -178,8 +178,8 @@
         <input type="range" id="metroVolume" min="0" max="1" step="0.01" value="0.6" />
         <span class="hint" id="metroVolumeLabel">60%</span>
       </label>
-      <button class="btn btn-ghost" id="recommendOffsetBtn" type="button" style="margin-top:12px;">AI 推荐 BPM / 偏移</button>
-      <div class="hint" id="recommendOffsetHint" style="margin-top:8px;">上传伴奏后，可用 librosa 按整首歌匹配节拍器；填写 BPM 时仅推荐 0.01s 粒度偏移，清空 BPM 时同时推荐 BPM。</div>
+      <button class="btn btn-ghost" id="recommendOffsetBtn" type="button" style="margin-top:12px;">高级 AI 推荐 BPM / 偏移</button>
+      <div class="hint" id="recommendOffsetHint" style="margin-top:8px;">上传伴奏后，可用高级节拍分析按整首歌匹配节拍器；填写 BPM 时仅推荐 0.01s 粒度偏移，清空 BPM 时同时推荐 BPM。</div>
     </div>
 
     <!-- 图片上传 -->
@@ -251,8 +251,10 @@
           </div>
         </div>
       </div>
-      <button class="btn btn-sm" id="previewSeg" type="button" style="margin-top:12px;">▶ 试听伴奏+节拍器</button>
-      <div class="hint" style="margin-top:6px;">可直接试听节拍器是否对齐；勾选裁剪后会只试听选段。</div>
+      <div id="newPreviewBlock">
+        <button class="btn btn-sm" id="previewSeg" type="button" style="margin-top:12px;">▶ 试听新伴奏+节拍器</button>
+        <div class="hint" style="margin-top:6px;">选择新伴奏后可试听节拍器是否对齐；勾选裁剪后会只试听选段。</div>
+      </div>
     </div>
 
     <div class="form-actions">
@@ -397,9 +399,10 @@
         if (!recommendBlob) throw new Error('请先选择伴奏文件，再推荐偏移');
         const bpmInput = document.getElementById('metroBpm');
         const manualBpm = bpmInput.value && bpmInput.value.trim();
-        hint.textContent = manualBpm ? '正在用整首歌匹配当前 BPM 的最佳偏移，请稍候…' : '正在用整首歌推荐 BPM 并匹配最佳偏移，请稍候…';
+        hint.textContent = manualBpm ? '正在用高级节拍分析匹配当前 BPM 的最佳偏移，请稍候…' : '正在用高级节拍分析推荐 BPM 并匹配最佳偏移，请稍候…';
         const fd = new FormData();
         fd.append('bpm', manualBpm || '');
+        fd.append('advanced', '1');
         fd.append('audio', recommendBlob, recommendName);
         const res = await apiFetch('/api/metronome/recommend-offset', { method: 'POST', body: fd });
         if (res.status === 401) { goLogin(); return; }
@@ -837,6 +840,10 @@
     let hasExistingAudio = false;
     const uploadArea = document.getElementById('uploadArea');
     const audioChoice = document.getElementById('audioChoice');
+    const newPreviewBlock = document.getElementById('newPreviewBlock');
+    function syncAudioPreviewVisibility() {
+      newPreviewBlock.style.display = (!hasExistingAudio || audioAction === 'replace') ? 'block' : 'none';
+    }
 
     document.querySelectorAll('#audioActionGroup .radio-card').forEach(card => {
       card.addEventListener('click', () => {
@@ -844,6 +851,7 @@
         card.classList.add('active');
         audioAction = card.dataset.action;
         uploadArea.style.display = (audioAction === 'replace') ? 'block' : 'none';
+        syncAudioPreviewVisibility();
       });
     });
 
@@ -881,10 +889,12 @@
           ea.src = mediaUrl(data.audio_url);
           ea.style.display = 'block';
           uploadArea.style.display = 'none'; // hidden until 替换 chosen
+          syncAudioPreviewVisibility();
         } else {
           hasExistingAudio = false;
           audioAction = null; // behave like create: file present => replace
           uploadArea.style.display = 'block';
+          syncAudioPreviewVisibility();
         }
       } catch (e) {
         toast('加载失败，请重试', 'err');

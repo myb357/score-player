@@ -43,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.26")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.27")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -325,17 +325,22 @@ def _recommend_offset_from_peaks(peaks: list, bpm: float, search_seconds: float 
     support = min(1.0, best_hits / support_target)
     strength = best_score / max(1.0, best_hits) if best_hits else 0.0
     confidence = min(1.0, support * 0.6 + strength * 0.4)
+    canonical_offset = best_offset % interval
+    if canonical_offset > interval / 2:
+        canonical_offset -= interval
     return {
-        "offset": round(best_offset, 2),
+        "offset": round(canonical_offset, 2),
+        "raw_offset": round(best_offset, 2),
         "confidence": round(confidence, 2),
         "matched_beats": int(best_hits),
         "analyzed_beats": int(len(peaks)),
         "support_target": int(support_target),
         "mean_error": round(best_error, 3) if best_hits else None,
+        "score": round(best_score, 4),
     }
 
 
-def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None) -> dict:
+def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advanced: bool = False) -> dict:
     ffmpeg = get_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("服务器未安装 ffmpeg，无法分析伴奏")
@@ -355,26 +360,74 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None) -> di
         if y.size < sr:
             raise RuntimeError("伴奏过短，无法分析节拍")
         onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        analysis_envs = [("full", onset_env)]
+        if advanced:
+            try:
+                harmonic, percussive = librosa.effects.hpss(y)
+                percussive_env = librosa.onset.onset_strength(y=percussive, sr=sr)
+                analysis_envs.append(("percussive", percussive_env))
+            except Exception:
+                percussive_env = onset_env
+            try:
+                cqt_env = librosa.onset.onset_strength(y=y, sr=sr, aggregate="median")
+                analysis_envs.append(("median", cqt_env))
+            except Exception:
+                pass
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, onset_envelope=onset_env, trim=False)
         if hasattr(tempo, "__len__"):
             tempo = float(tempo[0])
         recommended_bpm = round(min(300.0, max(30.0, float(tempo or 120.0))), 1)
         manual_bpm = bpm is not None
         target_bpm = min(300.0, max(30.0, float(bpm if manual_bpm else recommended_bpm)))
+        all_beat_times = []
+        all_onset_times = []
+        for _, env in analysis_envs:
+            try:
+                _, frames = librosa.beat.beat_track(y=y, sr=sr, onset_envelope=env, trim=False)
+                all_beat_times.extend(librosa.frames_to_time(frames, sr=sr).tolist())
+            except Exception:
+                pass
+            try:
+                frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, units="frames", backtrack=advanced)
+                all_onset_times.extend(librosa.frames_to_time(frames, sr=sr).tolist())
+            except Exception:
+                pass
         beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
         onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, units="frames", backtrack=False)
         onset_times = librosa.frames_to_time(onset_frames, sr=sr).tolist()
+        all_beat_times.extend(beat_times)
+        all_onset_times.extend(onset_times)
         # Prefer librosa beat positions because they represent a full-song tempo grid.
-        # Fall back to onsets when beat tracking is weak, and cap only for CPU safety.
-        peaks = [float(t) for t in beat_times if t >= 0]
-        if len(peaks) < 8:
-            peaks = [float(t) for t in onset_times if t >= 0]
+        # Advanced mode also adds percussive/onset alternatives, then de-duplicates near events.
+        source_times = all_beat_times if len(all_beat_times) >= 8 else all_onset_times
+        peaks = []
+        for t in sorted(float(t) for t in source_times if t >= 0):
+            if not peaks or abs(t - peaks[-1]) >= 0.035:
+                peaks.append(t)
         if len(peaks) > 1200:
             stride = max(1, len(peaks) // 1200)
             peaks = peaks[::stride]
         if len(peaks) < 3:
             raise RuntimeError("伴奏鼓点不明显，无法推荐 BPM 或偏移")
-        offset_result = _recommend_offset_from_peaks(peaks, target_bpm)
+        if manual_bpm:
+            offset_result = _recommend_offset_from_peaks(peaks, target_bpm)
+        else:
+            candidate_bpms = {recommended_bpm, round(recommended_bpm), round(recommended_bpm / 5) * 5, round(recommended_bpm / 10) * 10}
+            for delta in range(-4, 5):
+                candidate_bpms.add(round(recommended_bpm + delta, 1))
+            # Many teaching materials use printed integer BPM values such as 60/80/90/100/120.
+            # Include nearby common tempos so a slightly biased detector (e.g. 123 for a 120 score)
+            # can still settle on the musically intended grid when the full-song fit is comparable.
+            for common in (60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160):
+                if abs(common - recommended_bpm) <= 6:
+                    candidate_bpms.add(float(common))
+            candidate_results = []
+            for candidate in sorted(b for b in candidate_bpms if 30 <= b <= 300):
+                result = _recommend_offset_from_peaks(peaks, float(candidate))
+                tempo_penalty = abs(candidate - recommended_bpm) * (0.008 if advanced else 0.015)
+                common_bonus = 0.04 if advanced and abs(candidate - round(candidate / 5) * 5) < 0.01 else 0.0
+                candidate_results.append((result["confidence"] - tempo_penalty + common_bonus, result["score"], common_bonus, candidate, result))
+            _, _, _, target_bpm, offset_result = max(candidate_results)
         return {
             "offset": offset_result["offset"],
             "confidence": offset_result["confidence"],
@@ -386,7 +439,7 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None) -> di
             "analyzed_beats": offset_result.get("analyzed_beats"),
             "support_target": offset_result.get("support_target"),
             "mean_error": offset_result.get("mean_error"),
-            "analysis": "librosa-v2-full-song",
+            "analysis": "librosa-v2-advanced" if advanced else "librosa-v2-full-song",
         }
 
 
@@ -1687,6 +1740,7 @@ async def create_score(
 async def api_recommend_metronome_offset(
     request: Request,
     bpm: str = Form(""),
+    advanced: str = Form("0"),
     audio: UploadFile = File(...),
 ):
     current_user(request)
@@ -1702,7 +1756,7 @@ async def api_recommend_metronome_offset(
         tmp.write(raw)
         src = tmp.name
     try:
-        return recommend_metronome_offset(src, bpm_val)
+        return recommend_metronome_offset(src, bpm_val, str(advanced).strip().lower() in ("1", "true", "yes", "on"))
     except Exception as e:
         return JSONResponse(status_code=400, content={"detail": str(e)})
     finally:
