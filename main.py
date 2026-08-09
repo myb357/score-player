@@ -1601,6 +1601,7 @@ async def api_create_score_async(
     bpm = min(300.0, max(30.0, bpm))
     try:
         metro_offset = float(metronome_offset or 0)
+        metro_offset = round(metro_offset * 10) / 10
     except (TypeError, ValueError):
         metro_offset = 0.0
     metro_offset = min(600.0, max(-600.0, metro_offset))
@@ -1793,6 +1794,7 @@ async def update_score(
     bpm = min(300.0, max(30.0, bpm))
     try:
         metro_offset = float(metronome_offset or 0)
+        metro_offset = round(metro_offset * 10) / 10
     except (TypeError, ValueError):
         metro_offset = 0.0
     metro_offset = min(600.0, max(-600.0, metro_offset))

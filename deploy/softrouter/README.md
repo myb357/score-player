@@ -210,7 +210,7 @@ Host score-router
 
 ## 分支与版本状态
 
-当前生产发布统一走 `main` 分支，旧软路由自动部署分支已删除；部署文档、一键迁移命令、迁移脚本下载源和 GitHub Actions 分支触发均应保持在 `main`。当前 Android APK 版本为 v1.3.19（`versionCode=31`，`versionName=1.3.19`），软路由部署通过 ACR 主镜像源、GHCR 备用镜像源和 Cloudflare Webhook 主动触发完成。
+当前生产发布统一走 `main` 分支，旧软路由自动部署分支已删除；部署文档、一键迁移命令、迁移脚本下载源和 GitHub Actions 分支触发均应保持在 `main`。当前 Android APK 版本为 v1.3.19（`versionCode=31`，`versionName=1.3.19`），软路由部署通过 ACR 主镜像源、GHCR 备用镜像源和 Cloudflare Webhook 主动触发完成。每次发布必须确认 Android App APK、软路由生产域名 `https://scoreplayer-myb.top`、Render 兜底服务 `https://score-player.onrender.com` 三端同步上线。
 
 ## APK 内网优先端点
 

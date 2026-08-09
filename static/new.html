@@ -171,7 +171,7 @@
           <input type="number" id="metroBpm" min="30" max="300" step="1" value="120" />
         </label>
         <label class="field-label">时间轴偏移（秒）
-          <input type="number" id="metroOffset" min="-600" max="600" step="0.01" value="0" />
+          <input type="number" id="metroOffset" min="-600" max="600" step="0.1" value="0" />
         </label>
       </div>
       <label class="field-label" style="margin-top:12px;">节拍器音量
@@ -243,7 +243,7 @@
             <div class="trim-row">
               <div>起始 A：<b id="trimStartLabel" style="color:var(--accent-2)">0:00</b></div>
               <div>结束 B：<b id="trimEndLabel" style="color:var(--accent-2)">0:00</b></div>
-              <button class="btn btn-sm" id="previewSeg" type="button">▶ 试听选段</button>
+              <button class="btn btn-sm" id="previewSeg" type="button">▶ 试听选段+节拍器</button>
             </div>
           </div>
         </div>
@@ -364,6 +364,12 @@
     function updateMetroVolumeLabel() { metroVolumeLabel.textContent = Math.round(Number(metroVolume.value || 0) * 100) + '%'; }
     metroVolume.addEventListener('input', updateMetroVolumeLabel);
     updateMetroVolumeLabel();
+    function normalizeMetroOffsetInput() {
+      const el = document.getElementById('metroOffset');
+      const v = Number(el.value || 0);
+      el.value = (Math.round(Math.min(600, Math.max(-600, isFinite(v) ? v : 0)) * 10) / 10).toFixed(1).replace(/\.0$/, '');
+    }
+    document.getElementById('metroOffset').addEventListener('change', normalizeMetroOffsetInput);
 
     // ---------- images / pages ----------
     // page model: { id, turn, kind:'existing'|'new', file?, url, filename?, name }
@@ -720,11 +726,46 @@
       updateTrimUI();
     });
 
+    let metroPreviewCtx=null, metroPreviewTimer=null, metroPreviewNext=0;
+    function stopMetroPreview(){ clearInterval(metroPreviewTimer); metroPreviewTimer=null; }
+    function metroPreviewClick(accent){
+      if(!metroPreviewCtx)return;
+      const vol=Math.min(1,Math.max(0,Number(metroVolume.value)||0.6));
+      if(vol<=0)return;
+      const osc=metroPreviewCtx.createOscillator();
+      const gain=metroPreviewCtx.createGain();
+      osc.frequency.value=accent?1320:880;
+      gain.gain.setValueAtTime(0,metroPreviewCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(vol*0.35,metroPreviewCtx.currentTime+0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001,metroPreviewCtx.currentTime+0.08);
+      osc.connect(gain); gain.connect(metroPreviewCtx.destination); osc.start(); osc.stop(metroPreviewCtx.currentTime+0.09);
+    }
+    function startMetroPreview(startAt){
+      stopMetroPreview();
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(!AC)return;
+      if(!metroPreviewCtx)metroPreviewCtx=new AC();
+      if(metroPreviewCtx.state==='suspended')metroPreviewCtx.resume().catch(()=>{});
+      const bpm=Math.min(300,Math.max(30,Number(document.getElementById('metroBpm').value)||120));
+      const interval=60/bpm;
+      const offset=Math.round((Number(document.getElementById('metroOffset').value)||0)*10)/10;
+      const n=Math.max(0,Math.ceil((startAt-offset)/interval));
+      metroPreviewNext=offset+n*interval;
+      metroPreviewTimer=setInterval(()=>{
+        const t=mediaPreview.currentTime;
+        while(t+0.03>=metroPreviewNext){
+          metroPreviewClick(Math.round((metroPreviewNext-offset)/interval)%4===0);
+          metroPreviewNext+=interval;
+        }
+      },25);
+    }
     document.getElementById('previewSeg').addEventListener('click', () => {
+      normalizeMetroOffsetInput();
       const a = parseFloat(trimStart.value), b = parseFloat(trimEnd.value);
       mediaPreview.currentTime = a;
       mediaPreview.play();
-      const stop = () => { if (mediaPreview.currentTime >= b) { mediaPreview.pause(); mediaPreview.removeEventListener('timeupdate', stop); } };
+      startMetroPreview(a);
+      const stop = () => { if (mediaPreview.currentTime >= b || mediaPreview.paused) { mediaPreview.pause(); stopMetroPreview(); mediaPreview.removeEventListener('timeupdate', stop); } };
       mediaPreview.addEventListener('timeupdate', stop);
     });
 
