@@ -360,11 +360,16 @@
           <button class="round-btn sm" id="boostDown" title="降低播放音量">−</button>
         </div>
         <div class="metro-v" id="metroGroup">
-          <button class="round-btn sm" id="metroToggle" title="开启/关闭节拍器">🥁</button>
-          <button class="round-btn sm" id="metroVolUp" title="增大节拍器音量">＋</button>
+          <button class="round-btn" id="metroMenuBtn" title="节拍器设置" aria-label="节拍器设置" aria-expanded="false">🥁</button>
           <span class="metro-val" id="metroVolVal">60%</span>
           <span class="lbl">节拍器</span>
-          <button class="round-btn sm" id="metroVolDown" title="降低节拍器音量">−</button>
+          <div class="metro-popover" id="metroMenu" aria-hidden="true">
+            <button class="round-btn sm" id="metroToggle" title="开启/关闭节拍器">🥁</button>
+            <div class="metro-popover-title" id="metroStateLabel">关闭</div>
+            <button class="round-btn sm" id="metroVolUp" title="增大节拍器音量">＋</button>
+            <div class="metro-popover-val" id="metroVolMenuVal">60%</div>
+            <button class="round-btn sm" id="metroVolDown" title="降低节拍器音量">−</button>
+          </div>
         </div>
         <div class="bar-spacer"></div>
         <button class="round-btn" id="prevBtn" title="上一页">⏮</button>
@@ -449,7 +454,7 @@
       random:{icon:'🔀',label:'随机',title:'播放模式：随机播放'}
     };
     let audioCtx=null, gainNode=null, mediaSourceNode=null, boost=1.0;
-    let metronomeOn=false, metroTimer=null, metroNextTime=0, metroVolume=0.6;
+    let metronomeOn=false, metroTimer=null, metroNextTime=0, metroVolume=0.6, metroMenuOpen=false;
     const audio=$('audio'), stage=$('stage'), img=$('pageImg');
     const pageLoading=$('pageLoading'), miniProgress=$('miniProgress'), miniProgressFill=$('miniProgressFill');
     const hasAudio=()=>!!(score&&score.audio_url);
@@ -505,7 +510,7 @@
       // Keep the original /api/media path for IndexedDB (offline download) lookup.
       (data.pages||[]).forEach(p=>{ if(p&&p.image_url){ if(!p.image_path)p.image_path=p.image_url; p.image_url=mediaUrl(p.image_url); } });
       if(data.audio_url){ if(!data.audio_path)data.audio_path=data.audio_url; data.audio_url=mediaUrl(data.audio_url); }
-      score=data; pages=score.pages||[]; mode=score.mode; metroVolume=score.metronome_volume==null?0.6:Number(score.metronome_volume); $('title').textContent=score.name;
+      score=data; pages=score.pages||[]; mode=score.mode; loadMetronomePrefs(score.metronome_volume==null?0.6:Number(score.metronome_volume)); $('title').textContent=score.name;
       flipAway=pages.map(p=>p.turn_seconds||0);
       await Promise.all(pages.map(async p=>{p.cached_image_url=await cachedAssetUrl(p.image_url, p.image_path);}));
       if(hasAudio()){
@@ -794,10 +799,39 @@
     }
     function metronomeInterval(){ return 60 / Math.min(300,Math.max(30,Number(score&&score.metronome_bpm)||120)); }
     function metronomeOffset(){ return Math.min(600,Math.max(-600,Number(score&&score.metronome_offset)||0)); }
-    function setMetroVolume(v){ metroVolume=Math.min(1,Math.max(0,Math.round(v*100)/100)); if(score)score.metronome_volume=metroVolume; updateMetroUI(); }
+    function metronomePrefsKey(){ return `score-player:metronome:${scoreId}`; }
+    function loadMetronomePrefs(defaultVolume){
+      metronomeOn=false;
+      metroVolume=Math.min(1,Math.max(0,Number(defaultVolume)||0.6));
+      try{
+        const saved=JSON.parse(localStorage.getItem(metronomePrefsKey())||'null');
+        if(saved){
+          metronomeOn=!!saved.on;
+          if(saved.volume!=null&&isFinite(Number(saved.volume))) metroVolume=Math.min(1,Math.max(0,Math.round(Number(saved.volume)*100)/100));
+        }
+      }catch(e){/* ignore */}
+      if(score)score.metronome_volume=metroVolume;
+    }
+    function saveMetronomePrefs(){
+      try{localStorage.setItem(metronomePrefsKey(),JSON.stringify({on:!!metronomeOn,volume:metroVolume,updatedAt:Date.now()}));}catch(e){/* ignore */}
+    }
+    function setMetroMenu(open){
+      metroMenuOpen=!!open;
+      $('metroGroup').classList.toggle('open',metroMenuOpen);
+      $('metroMenuBtn').setAttribute('aria-expanded',String(metroMenuOpen));
+      $('metroMenu').setAttribute('aria-hidden',String(!metroMenuOpen));
+      if(metroMenuOpen)showBars();
+    }
+    function toggleMetroMenu(){ setMetroMenu(!metroMenuOpen); }
+    function setMetroVolume(v){ metroVolume=Math.min(1,Math.max(0,Math.round(v*100)/100)); if(score)score.metronome_volume=metroVolume; saveMetronomePrefs(); updateMetroUI(); }
     function updateMetroUI(){
+      const pct=Math.round(metroVolume*100)+'%';
       $('metroToggle').classList.toggle('active',metronomeOn);
-      $('metroVolVal').textContent=Math.round(metroVolume*100)+'%';
+      $('metroMenuBtn').classList.toggle('active',metronomeOn);
+      $('metroMenuBtn').title=metronomeOn?'节拍器已开启':'节拍器已关闭';
+      $('metroVolVal').textContent=pct;
+      $('metroVolMenuVal').textContent=pct;
+      $('metroStateLabel').textContent=metronomeOn?'开启':'关闭';
     }
     function clickMetro(accent){
       if(!audioCtx||metroVolume<=0)return;
@@ -828,7 +862,7 @@
         }
       },25);
     }
-    function toggleMetronome(){ metronomeOn=!metronomeOn; updateMetroUI(); if(metronomeOn) scheduleMetronome(); else stopMetronome(); }
+    function toggleMetronome(){ metronomeOn=!metronomeOn; saveMetronomePrefs(); updateMetroUI(); if(metronomeOn) scheduleMetronome(); else stopMetronome(); }
 
     // ---------- countdown ----------
     function resetCountdown(){ clearTimeout(cdTimer); cdTimer=null; const d=flipAway[current]>0?flipAway[current]:0; cdRemaining=d*1000; updateCdPill(); if(playing)startCountdown(); }
@@ -869,7 +903,7 @@
     // ---------- auto-hide (play-state based) ----------
     let hideTimer=null;
     function showBars(){ $('leftBar').classList.remove('player-hidden'); $('rightBar').classList.remove('player-hidden'); }
-    function hideBars(){ if(playing){ $('leftBar').classList.add('player-hidden'); $('rightBar').classList.add('player-hidden'); } }
+    function hideBars(){ if(playing&&!metroMenuOpen){ $('leftBar').classList.add('player-hidden'); $('rightBar').classList.add('player-hidden'); } }
     function scheduleHide(){ clearTimeout(hideTimer); if(playing) hideTimer=setTimeout(hideBars,3000); }
     function onActivity(){ showBars(); scheduleHide(); }
 
@@ -894,6 +928,9 @@
       $('playModeBtn').addEventListener('click',togglePlaybackMode);
       $('boostUp').addEventListener('click',()=>setBoost(boost+0.1));
       $('boostDown').addEventListener('click',()=>setBoost(boost-0.1));
+      $('metroMenuBtn').addEventListener('click',e=>{e.stopPropagation();toggleMetroMenu();});
+      $('metroMenu').addEventListener('click',e=>e.stopPropagation());
+      document.addEventListener('click',()=>setMetroMenu(false));
       $('metroToggle').addEventListener('click',toggleMetronome);
       $('metroVolUp').addEventListener('click',()=>setMetroVolume(metroVolume+0.05));
       $('metroVolDown').addEventListener('click',()=>setMetroVolume(metroVolume-0.05));

@@ -11,8 +11,8 @@ android {
         applicationId = "com.yunbo.scoreplayer"
         minSdk = 23
         targetSdk = 35
-        versionCode = 36
-        versionName = "1.3.24"
+        versionCode = 37
+        versionName = "1.3.25"
     }
 
     compileOptions {

@@ -287,7 +287,7 @@ audio.media-preview { background: transparent; }
 .side-bar {
   flex-shrink: 0; width: 88px; display: flex; flex-direction: column; align-items: center;
   gap: 12px; padding: 14px 8px; background: rgba(10,12,22,.82); backdrop-filter: blur(8px);
-  z-index: 20; transition: opacity .3s, width .3s, padding .3s; overflow: hidden;
+  z-index: 20; transition: opacity .3s, width .3s, padding .3s; overflow: visible;
 }
 .side-bar.left { border-right: 1px solid var(--border); }
 .side-bar.right { border-left: 1px solid var(--border); }
@@ -316,6 +316,17 @@ audio.media-preview { background: transparent; }
 .speed-v, .ab-v, .play-mode-v, .volume-boost-v, .metro-v { display: flex; flex-direction: column; align-items: center; gap: 5px; }
 .speed-v .speed-val, .volume-boost-v .boost-val, .metro-v .metro-val { font-weight: 700; font-size: 13px; color: var(--accent-2); min-width: 40px; text-align: center; }
 .speed-v .lbl, .ab-v .lbl, .play-mode-v .lbl, .volume-boost-v .lbl, .metro-v .lbl { font-size: 10.5px; color: var(--muted); }
+.metro-v { position: relative; }
+.metro-popover {
+  position: absolute; left: 56px; top: 50%; transform: translateY(-50%) scale(.96);
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px; min-width: 210px;
+  border: 1px solid rgba(255,255,255,.16); border-radius: 18px;
+  background: rgba(18,22,38,.96); box-shadow: 0 14px 40px rgba(0,0,0,.38);
+  opacity: 0; pointer-events: none; transition: opacity .16s ease, transform .16s ease; z-index: 40;
+}
+.metro-v.open .metro-popover { opacity: 1; pointer-events: auto; transform: translateY(-50%) scale(1); }
+.metro-popover-title { min-width: 34px; font-size: 12px; color: var(--muted); text-align: center; }
+.metro-popover-val { min-width: 38px; font-size: 13px; font-weight: 700; color: var(--accent-2); text-align: center; }
 .round-btn.active { border-color: rgba(52,211,153,.75); background: rgba(52,211,153,.18); color: #d1fae5; }
 .countdown-pill { font-size: 11px; color: var(--accent-2); background: rgba(34,211,238,.12); border: 1px solid rgba(34,211,238,.3); padding: 5px 7px; border-radius: 10px; text-align: center; }
 
@@ -327,6 +338,7 @@ audio.media-preview { background: transparent; }
   .play-btn { width: 48px; height: 48px; font-size: 21px; }
   .round-btn { width: 40px; height: 40px; font-size: 16px; }
   .round-btn.sm { width: 32px; height: 32px; font-size: 14px; }
+  .metro-popover { left: 48px; min-width: 190px; padding: 9px 10px; gap: 6px; }
   .bar-title { display: none; }
   .page-item img { width: 46px; height: 46px; }
   .form-actions { justify-content: stretch; }
