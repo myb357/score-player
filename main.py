@@ -43,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.27")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.28")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -411,23 +411,49 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
             raise RuntimeError("伴奏鼓点不明显，无法推荐 BPM 或偏移")
         if manual_bpm:
             offset_result = _recommend_offset_from_peaks(peaks, target_bpm)
+            top_candidates = []
         else:
             candidate_bpms = {recommended_bpm, round(recommended_bpm), round(recommended_bpm / 5) * 5, round(recommended_bpm / 10) * 10}
-            for delta in range(-4, 5):
+            # Widen the fine-grained sweep and include half/double tempos to cover octave errors.
+            for delta in range(-8, 9):
                 candidate_bpms.add(round(recommended_bpm + delta, 1))
+            for factor in (0.5, 2.0):
+                candidate_bpms.add(round(recommended_bpm * factor, 1))
             # Many teaching materials use printed integer BPM values such as 60/80/90/100/120.
             # Include nearby common tempos so a slightly biased detector (e.g. 123 for a 120 score)
             # can still settle on the musically intended grid when the full-song fit is comparable.
-            for common in (60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160):
-                if abs(common - recommended_bpm) <= 6:
+            for common in (60, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 150, 160):
+                if abs(common - recommended_bpm) <= 8:
                     candidate_bpms.add(float(common))
             candidate_results = []
             for candidate in sorted(b for b in candidate_bpms if 30 <= b <= 300):
                 result = _recommend_offset_from_peaks(peaks, float(candidate))
-                tempo_penalty = abs(candidate - recommended_bpm) * (0.008 if advanced else 0.015)
-                common_bonus = 0.04 if advanced and abs(candidate - round(candidate / 5) * 5) < 0.01 else 0.0
-                candidate_results.append((result["confidence"] - tempo_penalty + common_bonus, result["score"], common_bonus, candidate, result))
-            _, _, _, target_bpm, offset_result = max(candidate_results)
+                # Softer tempo penalty in advanced mode so musical BPMs stay competitive.
+                tempo_penalty = abs(candidate - recommended_bpm) * (0.004 if advanced else 0.012)
+                bonus = 0.0
+                if advanced:
+                    # Prefer round musical tempos: 10-multiples > 5-multiples > integers.
+                    if abs(candidate - round(candidate / 10) * 10) < 0.01:
+                        bonus = 0.08
+                    elif abs(candidate - round(candidate / 5) * 5) < 0.01:
+                        bonus = 0.045
+                    elif abs(candidate - round(candidate)) < 0.01:
+                        bonus = 0.02
+                score_metric = result["confidence"] - tempo_penalty + bonus
+                candidate_results.append((score_metric, result["score"], bonus, candidate, result))
+            candidate_results.sort(reverse=True)
+            _, _, _, target_bpm, offset_result = candidate_results[0]
+            # Expose top candidates so the UI can hint at alternatives (e.g. 120 vs 123).
+            top_candidates = [
+                {
+                    "bpm": round(bpm, 1),
+                    "offset": res["offset"],
+                    "confidence": res["confidence"],
+                    "score": round(score_metric, 4),
+                    "bonus": round(bonus, 4),
+                }
+                for score_metric, _, bonus, bpm, res in candidate_results[:5]
+            ]
         return {
             "offset": offset_result["offset"],
             "confidence": offset_result["confidence"],
@@ -439,6 +465,7 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None, advan
             "analyzed_beats": offset_result.get("analyzed_beats"),
             "support_target": offset_result.get("support_target"),
             "mean_error": offset_result.get("mean_error"),
+            "candidates": top_candidates,
             "analysis": "librosa-v2-advanced" if advanced else "librosa-v2-full-song",
         }
 
