@@ -43,7 +43,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.25")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.26")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -316,14 +316,21 @@ def _recommend_offset_from_peaks(peaks: list, bpm: float, search_seconds: float 
         mean_error = total_error / hits if hits else float("inf")
         if (score, hits, -mean_error) > (best_score, best_hits, -best_error):
             best_offset, best_score, best_hits, best_error = offset, score, hits, mean_error
-    coverage = best_hits / max(1, len(peaks))
+    # Not every quarter-note grid has a clear drum hit: many accompaniments only
+    # accent downbeats, backbeats, fills, or sparse phrase starts. Treating all
+    # analyzed beat candidates as mandatory makes confidence look artificially low
+    # even when the metronome phase is useful. Use a musical support target instead:
+    # about one third of full-song beat cues, with a small floor for short clips.
+    support_target = max(8, int(round(len(peaks) * 0.33)))
+    support = min(1.0, best_hits / support_target)
     strength = best_score / max(1.0, best_hits) if best_hits else 0.0
-    confidence = min(1.0, coverage * 0.7 + strength * 0.3)
+    confidence = min(1.0, support * 0.6 + strength * 0.4)
     return {
         "offset": round(best_offset, 2),
         "confidence": round(confidence, 2),
         "matched_beats": int(best_hits),
         "analyzed_beats": int(len(peaks)),
+        "support_target": int(support_target),
         "mean_error": round(best_error, 3) if best_hits else None,
     }
 
@@ -377,6 +384,7 @@ def recommend_metronome_offset(src_path: str, bpm: Optional[float] = None) -> di
             "manual_bpm": manual_bpm,
             "matched_beats": offset_result.get("matched_beats"),
             "analyzed_beats": offset_result.get("analyzed_beats"),
+            "support_target": offset_result.get("support_target"),
             "mean_error": offset_result.get("mean_error"),
             "analysis": "librosa-v2-full-song",
         }
