@@ -768,10 +768,12 @@
       play();
     }
     function canUseAudioBoost(){
-      // Render serves /api/media as a 302 to Backblaze B2. Once a cross-origin
-      // media element is attached to WebAudio without CORS, browsers intentionally
-      // output silence. Keep native <audio> output on Render so playback never mutes.
-      return !/score-player\.onrender\.com/i.test(API_BASE);
+      // Render web mode uses same-origin API_BASE='', while /api/media 302s to
+      // Backblaze B2. Connecting that cross-origin media element to WebAudio
+      // mutes output by browser security policy, so detect by page host too.
+      const renderHost=/score-player\.onrender\.com/i.test(location.hostname||'');
+      const renderBase=/score-player\.onrender\.com/i.test(API_BASE||'');
+      return !(renderHost||renderBase);
     }
     function ensureAudioBoost(){
       if(!hasAudio())return;
