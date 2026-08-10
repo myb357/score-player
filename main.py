@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import math
 import mimetypes
 import os
 import posixpath
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import wave
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -43,7 +45,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.32")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.33")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -971,6 +973,106 @@ async def service_worker():
 @app.get("/api/version")
 async def app_version():
     return {"version": APP_VERSION, "apk_url": "/download/android"}
+
+
+@app.post("/api/debug/qwen-audio-probe")
+async def debug_qwen_audio_probe(request: Request):
+    user = current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "未登录或会话已过期"})
+    api_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    model_name = os.environ.get("QWEN_AUDIO_MODEL", "qwen3-omni-flash").strip() or "qwen3-omni-flash"
+    result = {
+        "ok": False,
+        "has_key": bool(api_key),
+        "key_len": len(api_key),
+        "model": model_name,
+    }
+    if not api_key:
+        return JSONResponse(status_code=500, content={**result, "detail": "DASHSCOPE_API_KEY 未配置"})
+    try:
+        import dashscope  # type: ignore
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={**result, "detail": f"dashscope SDK 不可用: {exc!r}"})
+
+    probe_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=DATA_DIR) as f:
+            probe_path = f.name
+        sr = 16000
+        duration = 6.0
+        click_positions = {int(sr * t) for t in [i * 0.5 for i in range(12)]}
+        with wave.open(probe_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            frames = bytearray()
+            for i in range(int(sr * duration)):
+                amp = 0
+                for pos in click_positions:
+                    d = i - pos
+                    if 0 <= d < int(sr * 0.04):
+                        env = 1.0 - d / (sr * 0.04)
+                        amp = int(28000 * env * math.sin(2 * math.pi * 1000 * d / sr))
+                        break
+                frames += int(amp).to_bytes(2, "little", signed=True)
+            wf.writeframes(bytes(frames))
+
+        dashscope.api_key = api_key
+        prompt = (
+            "这是一段人工生成的节拍点击音频，候选 BPM 为 60、90、120。"
+            "请判断最匹配的 BPM。只输出 JSON：{\"best_bpm\": <数字>, \"reason\": \"<20字以内>\"}"
+        )
+        started = time.time()
+        response = dashscope.MultiModalConversation.call(
+            model=model_name,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"audio": f"file://{os.path.abspath(probe_path)}"},
+                    {"text": prompt},
+                ],
+            }],
+            timeout=45,
+        )
+        elapsed = round(time.time() - started, 3)
+        status_code = getattr(response, "status_code", None)
+        code = getattr(response, "code", None)
+        message = getattr(response, "message", None)
+        content = None
+        text = ""
+        parsed = None
+        try:
+            content = response.output.choices[0].message.content
+            if isinstance(content, list) and content:
+                text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+            else:
+                text = str(content)
+            m = re.search(r'"best_bpm"\s*:\s*([\d.]+)', text)
+            if m:
+                parsed = float(m.group(1))
+        except Exception as exc:
+            text = f"<parse failed: {exc!r}>"
+        ok = status_code in (200, "200")
+        return JSONResponse(content={
+            **result,
+            "ok": ok,
+            "status_code": status_code,
+            "code": code,
+            "message": message,
+            "elapsed_seconds": elapsed,
+            "recognized_bpm": parsed,
+            "output_text": text,
+            "raw_output": content,
+        })
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={**result, "detail": repr(exc)})
+    finally:
+        if probe_path and os.path.isfile(probe_path):
+            try:
+                os.remove(probe_path)
+            except Exception:
+                pass
 
 
 @app.head("/download/android")
