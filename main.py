@@ -45,7 +45,7 @@ from PIL import Image
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 ANDROID_APK_PATH = os.path.join(STATIC_DIR, "android", "score-player.apk")
-APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.34")
+APP_VERSION = os.environ.get("SCORE_APP_VERSION", "1.3.35")
 # Runtime data dir is only used for transient ffmpeg temp files now
 # (all persistent files live in Backblaze B2).
 DATA_DIR = os.environ.get("SCORE_DATA_DIR", "/tmp/score_app_data")
@@ -2495,7 +2495,8 @@ async def serve_media(score_id: int, filename: str, request: Request):
         return Response(status_code=400)
     key = _score_key(score_id, filename)
 
-    if not MEDIA_PROXY:
+    force_proxy = request.query_params.get("proxy") in ("1", "true", "yes", "on")
+    if not MEDIA_PROXY and not force_proxy:
         url = b2_presigned_url(key)
         return RedirectResponse(url=url, status_code=302)
 

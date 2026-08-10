@@ -509,7 +509,7 @@
       // Normalize media URLs to absolute so they load under file:// (offline app).
       // Keep the original /api/media path for IndexedDB (offline download) lookup.
       (data.pages||[]).forEach(p=>{ if(p&&p.image_url){ if(!p.image_path)p.image_path=p.image_url; p.image_url=mediaUrl(p.image_url); } });
-      if(data.audio_url){ if(!data.audio_path)data.audio_path=data.audio_url; data.audio_url=mediaUrl(data.audio_url); }
+      if(data.audio_url){ if(!data.audio_path)data.audio_path=data.audio_url; data.audio_url=mediaUrl(useRenderMediaProxy(data.audio_url)); }
       score=data; pages=score.pages||[]; mode=score.mode; loadMetronomePrefs(score.metronome_volume==null?0.6:Number(score.metronome_volume)); $('title').textContent=score.name;
       flipAway=pages.map(p=>p.turn_seconds||0);
       await Promise.all(pages.map(async p=>{p.cached_image_url=await cachedAssetUrl(p.image_url, p.image_path);}));
@@ -767,10 +767,15 @@
       setPage(0,false);
       play();
     }
+    function useRenderMediaProxy(u){
+      const isRender=/score-player\.onrender\.com/i.test(location.hostname||'')||/score-player\.onrender\.com/i.test(API_BASE||'');
+      if(!isRender||!u||u.indexOf('/api/media/')!==0)return u;
+      return u + (u.indexOf('?')>=0?'&':'?') + 'proxy=1';
+    }
     function canUseAudioBoost(){
-      // Render web mode uses same-origin API_BASE='', while /api/media 302s to
-      // Backblaze B2. Connecting that cross-origin media element to WebAudio
-      // mutes output by browser security policy, so detect by page host too.
+      // Render normally redirects /api/media to Backblaze B2. For playback we add
+      // ?proxy=1 so audio stays same-origin and WebAudio gain can work safely.
+      if(score&&score.audio_url&&/proxy=1/.test(score.audio_url))return true;
       const renderHost=/score-player\.onrender\.com/i.test(location.hostname||'');
       const renderBase=/score-player\.onrender\.com/i.test(API_BASE||'');
       return !(renderHost||renderBase);
