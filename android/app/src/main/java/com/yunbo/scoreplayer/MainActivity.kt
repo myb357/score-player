@@ -111,7 +111,7 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == imagePickRequestCode && resultCode == Activity.RESULT_OK) {
-            data?.data?.let { bridge.saveLastPickedImageUri(it) }
+            data?.data?.let { bridge.savePickedImageUris(listOf(it)) }
         }
         if (requestCode == fileChooserRequestCode) {
             val result = if (resultCode == Activity.RESULT_OK) {
@@ -120,16 +120,15 @@ class MainActivity : Activity() {
                     for (i in 0 until clip.itemCount) {
                         clip.getItemAt(i)?.uri?.let { uri ->
                             contentResolver.takePersistableUriPermissionIfPossible(uri)
-                            bridge.saveLastPickedImageUri(uri)
                             uris.add(uri)
                         }
                     }
                 }
                 data?.data?.let { uri ->
                     contentResolver.takePersistableUriPermissionIfPossible(uri)
-                    bridge.saveLastPickedImageUri(uri)
                     uris.add(uri)
                 }
+                bridge.savePickedImageUris(uris)
                 uris.toTypedArray()
             } else {
                 null
@@ -287,15 +286,27 @@ class MainActivity : Activity() {
     class AndroidBridge(private val activity: MainActivity) {
         private val prefs = activity.getSharedPreferences("score_player", Context.MODE_PRIVATE)
         private var lastPickedImageUri: Uri? = null
+        private var pickedImageUris: List<Uri> = emptyList()
         @Volatile private var activeBaseUrl: String = prefs.getString("last_base_url", activity.cloudBaseUrl) ?: activity.cloudBaseUrl
         @Volatile private var internalReachable: Boolean = false
         @Volatile private var cloudReachable: Boolean = false
         @Volatile private var offlineMode: Boolean = false
         @Volatile private var biometricUnlocked: Boolean = false
 
+        fun savePickedImageUris(uris: List<Uri>) {
+            val imageUris = uris.filter { uri ->
+                val mime = activity.contentResolver.getType(uri) ?: ""
+                mime.isBlank() || mime.startsWith("image/")
+            }
+            pickedImageUris = imageUris
+            lastPickedImageUri = imageUris.lastOrNull()
+            imageUris.forEach { uri ->
+                activity.contentResolver.takePersistableUriPermissionIfPossible(uri)
+            }
+        }
+
         fun saveLastPickedImageUri(uri: Uri) {
-            lastPickedImageUri = uri
-            activity.contentResolver.takePersistableUriPermissionIfPossible(uri)
+            savePickedImageUris(listOf(uri))
         }
 
         fun setActiveBaseUrl(baseUrl: String, internalReachable: Boolean, cloudReachable: Boolean) {
@@ -432,18 +443,35 @@ class MainActivity : Activity() {
             activity.runOnUiThread { activity.openImagePicker() }
         }
 
-        @JavascriptInterface
-        fun readLastPickedImageAsBase64(): String {
-            val uri = lastPickedImageUri ?: return ""
+        private fun readImageUriAsBase64(uri: Uri): String {
             return try {
                 val mime = activity.contentResolver.getType(uri) ?: "image/jpeg"
+                if (!mime.startsWith("image/")) return ""
                 activity.contentResolver.openInputStream(uri)?.use { input ->
                     val bytes = input.readBytes()
+                    if (bytes.isEmpty()) return ""
                     "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
                 } ?: ""
             } catch (_: Exception) {
                 ""
             }
+        }
+
+        @JavascriptInterface
+        fun readPickedImageAsBase64(index: Int): String {
+            val uri = pickedImageUris.getOrNull(index) ?: return ""
+            return readImageUriAsBase64(uri)
+        }
+
+        @JavascriptInterface
+        fun pickedImageCount(): Int {
+            return pickedImageUris.size
+        }
+
+        @JavascriptInterface
+        fun readLastPickedImageAsBase64(): String {
+            val uri = lastPickedImageUri ?: return ""
+            return readImageUriAsBase64(uri)
         }
     }
 }

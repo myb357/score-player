@@ -487,9 +487,10 @@
 
     async function addImages(fileList) {
       const imageFiles = Array.from(fileList).filter(f => f.type.startsWith('image/'));
-      for (const f of imageFiles) {
+      for (let imageIndex = 0; imageIndex < imageFiles.length; imageIndex++) {
+        const f = imageFiles[imageIndex];
         try {
-          const cropped = await cropImageBeforeAdd(f, imageFiles.length === 1);
+          const cropped = await cropImageBeforeAdd(f, true, imageIndex);
           if (!cropped) continue;
           pages.push({ id: ++uid, turn: '', kind: 'new', file: cropped.file, url: URL.createObjectURL(cropped.file), name: cropped.file.name });
           renderPages();
@@ -510,54 +511,65 @@
       return base + '_cropped.' + ext;
     }
 
-    async function readFileAsBlob(file, allowNativeImageBridge) {
-      // 仅图片可选走 AndroidBridge 原生读取；多图选择时禁用该桥，因为它只保存
-      // “最后一次选图 URI”，循环裁剪会把每一页都读成同一张图。音频/视频永远
-      // 使用当前 File，避免误读上一次图片 URI。
+    async function readFileAsBlob(file, allowNativeImageBridge, imageIndex) {
       const isImageFile = !!(file && file.type && file.type.startsWith('image/'));
-      if (allowNativeImageBridge && isImageFile && window.AndroidBridge && typeof window.AndroidBridge.readLastPickedImageAsBase64 === 'function') {
+      const hasBridge = !!window.AndroidBridge;
+      const bridge = window.AndroidBridge || {};
+      const decodeDataUrl = (dataUrl, source) => {
+        if (!dataUrl || !dataUrl.startsWith('data:') || !dataUrl.includes(',')) return null;
+        const [meta, b64] = dataUrl.split(',');
+        const mime = (meta.split(':')[1] || '').split(';')[0] || file.type || 'image/jpeg';
+        const binary = atob(b64 || '');
+        if (!binary.length) return null;
+        const bytes = new Uint8Array(binary.length);
+        let nonZero = 0;
+        for (let i = 0; i < binary.length; i++) {
+          const v = binary.charCodeAt(i);
+          bytes[i] = v;
+          if (v !== 0 && nonZero < 32) nonZero++;
+        }
+        if (bytes.length < 64 || nonZero === 0) return null;
+        console.log('[readFileAsBlob] ' + source + ' ok, bytes=' + bytes.length + ', mime=' + mime + ', index=' + imageIndex);
+        return new Blob([bytes], { type: mime });
+      };
+      if (allowNativeImageBridge && isImageFile && hasBridge) {
         try {
-          const dataUrl = window.AndroidBridge.readLastPickedImageAsBase64();
-          if (dataUrl && dataUrl.startsWith('data:')) {
-            const [meta, b64] = dataUrl.split(',');
-            const mime = meta.split(':')[1].split(';')[0];
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            console.log('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 ok, bytes=' + bytes.length + ', mime=' + mime);
-            return new Blob([bytes], { type: mime });
-          } else {
-            console.warn('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 returned empty, falling back');
+          if (typeof bridge.readPickedImageAsBase64 === 'function') {
+            const pickedCount = typeof bridge.pickedImageCount === 'function' ? Number(bridge.pickedImageCount() || 0) : 0;
+            const dataUrl = bridge.readPickedImageAsBase64(Number(imageIndex || 0));
+            const blob = decodeDataUrl(dataUrl, 'AndroidBridge.readPickedImageAsBase64');
+            if (blob) return blob;
+            throw new Error('原生多图读取失败：index=' + imageIndex + ', pickedCount=' + pickedCount);
           }
+          if ((Number(imageIndex || 0) === 0) && typeof bridge.readLastPickedImageAsBase64 === 'function') {
+            const blob = decodeDataUrl(bridge.readLastPickedImageAsBase64(), 'AndroidBridge.readLastPickedImageAsBase64');
+            if (blob) return blob;
+            throw new Error('原生图片读取为空');
+          }
+          if (IS_FILE) throw new Error('当前 App 版本不支持多图逐张读取，请更新到最新版后重试');
         } catch (e) {
-          console.warn('[readFileAsBlob] AndroidBridge.readLastPickedImageAsBase64 failed:', e);
+          if (IS_FILE) throw e;
+          console.warn('[readFileAsBlob] AndroidBridge failed, falling back:', e);
         }
       }
-      // Fallback: FileReader.readAsDataURL（能读 content:// URI，比 arrayBuffer 可靠）
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-          const dataUrl = e.target.result;
-          if (!dataUrl || !dataUrl.includes(',')) {
-            console.warn('[readFileAsBlob] FileReader returned empty result, using original file');
-            resolve(file); return;
-          }
-          const [meta, b64] = dataUrl.split(',');
-          const mime = (meta.split(':')[1] || '').split(';')[0] || file.type || 'image/jpeg';
           try {
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            console.log('[readFileAsBlob] FileReader ok, bytes=' + bytes.length + ', mime=' + mime);
-            resolve(new Blob([bytes], { type: mime }));
-          } catch (e) {
-            console.warn('[readFileAsBlob] atob failed, using original file:', e);
-            resolve(file);
+            const blob = decodeDataUrl(e.target.result, 'FileReader');
+            if (!blob) {
+              const msg = isImageFile ? '图片读取结果为空，请更新 App 或改用单张上传' : '文件读取结果为空';
+              if (IS_FILE && isImageFile) reject(new Error(msg)); else resolve(file);
+              return;
+            }
+            resolve(blob);
+          } catch (e2) {
+            if (IS_FILE && isImageFile) reject(e2); else resolve(file);
           }
         };
         reader.onerror = () => {
-          console.warn('[readFileAsBlob] FileReader.onerror, using original file');
-          resolve(file);
+          const err = new Error('FileReader 读取失败');
+          if (IS_FILE && isImageFile) reject(err); else resolve(file);
         };
         reader.readAsDataURL(file);
       });
@@ -597,13 +609,13 @@
       return { cropResult: await res.json(), safeBlob, mimeType };
     }
 
-    async function cropImageBeforeAdd(file, allowNativeImageBridge) {
+    async function cropImageBeforeAdd(file, allowNativeImageBridge, imageIndex) {
       showImgLoading('正在读取图片…');
       updateImgLoading(null, 20);
 
       let blob;
       try {
-        blob = await readFileAsBlob(file, allowNativeImageBridge);
+        blob = await readFileAsBlob(file, allowNativeImageBridge, imageIndex);
       } catch (e) {
         hideImgLoading();
         throw e;
